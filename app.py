@@ -1,8 +1,10 @@
 ﻿"""
-Minecraft Texture Replacer v2.1
+Minecraft Texture Replacer v2.7
 =================================
 Tab 1 - Replace textures with your own photos
-Tab 2 - Browse resource packs from minecraft-inside.ru
+Tab 2 - Browse texture packs from:
+        * Minecraft-Inside.ru
+        * MinecraftExpert.ru
 """
 
 import sys, subprocess, importlib
@@ -15,7 +17,7 @@ for _mod, _pkg in [("PIL", "pillow"), ("requests", "requests"), ("bs4", "beautif
         if not getattr(sys, "frozen", False):
             subprocess.check_call([sys.executable, "-m", "pip", "install", "--quiet", _pkg])
 
-import io, json, os, re, shutil, tempfile, threading, time, zipfile
+import html, io, json, os, re, shutil, tempfile, threading, time, webbrowser, zipfile
 import urllib.parse
 from pathlib import Path
 import tkinter as tk
@@ -25,7 +27,7 @@ import requests
 from bs4 import BeautifulSoup
 from PIL import Image, ImageOps, ImageTk
 
-# ── Colors ────────────────────────────────────────────────────────────────────
+# ── Colors & Theme ────────────────────────────────────────────────────────────
 BG      = "#1e1e2e"
 SURFACE = "#313244"
 ACCENT  = "#89b4fa"
@@ -36,6 +38,7 @@ WARNING = "#f38ba8"
 
 TEXTURE_SIZES = [16, 32, 64, 128, 256]
 DEFAULT_MC = Path.home() / "AppData" / "Roaming" / ".minecraft"
+
 TEXTURE_CATEGORIES = {
     "Blocks":      "textures/block",
     "Items":       "textures/item",
@@ -44,26 +47,42 @@ TEXTURE_CATEGORIES = {
     "GUI":         "textures/gui",
     "All":         "",
 }
-SITE_BASE = "https://minecraft-inside.ru"
-SITE_CATEGORIES = {
-    "Все":          SITE_BASE + "/resource-packs/",
-    "PvP":          SITE_BASE + "/resource-packs/pvp/",
-    "Реалистичные": SITE_BASE + "/resource-packs/realism/",
-    "3D":           SITE_BASE + "/resource-packs/3d/",
-    "Современные":  SITE_BASE + "/resource-packs/modern/",
-    "Средневековые":SITE_BASE + "/resource-packs/medieval/",
-    "Мультяшные":   SITE_BASE + "/resource-packs/mult/",
-    "FPS":          SITE_BASE + "/resource-packs/fps/",
-    "Популярные":   SITE_BASE + "/resource-packs/?sort=rating",
+
+# ── Sources ───────────────────────────────────────────────────────────────────
+SITE_INSIDE_BASE = "https://minecraft-inside.ru"
+INSIDE_CATEGORIES = {
+    "Все текстуры":   f"{SITE_INSIDE_BASE}/resource-packs/",
+    "PvP":             f"{SITE_INSIDE_BASE}/resource-packs/pvp/",
+    "Реалистичные":    f"{SITE_INSIDE_BASE}/resource-packs/realism/",
+    "3D":              f"{SITE_INSIDE_BASE}/resource-packs/3d/",
+    "Современные":     f"{SITE_INSIDE_BASE}/resource-packs/modern/",
+    "Средневековые":   f"{SITE_INSIDE_BASE}/resource-packs/medieval/",
+    "Мультяшные":      f"{SITE_INSIDE_BASE}/resource-packs/mult/",
+    "FPS":             f"{SITE_INSIDE_BASE}/resource-packs/fps/",
+    "Популярные":      f"{SITE_INSIDE_BASE}/resource-packs/?sort=rating",
 }
+
+SITE_EXPERT_BASE = "https://minecraftexpert.ru"
+EXPERT_CATEGORIES = {
+    "Все текстуры":       f"{SITE_EXPERT_BASE}/textures/",
+    "Версия 1.21":        f"{SITE_EXPERT_BASE}/textures/1-21/",
+    "Версия 1.20":        f"{SITE_EXPERT_BASE}/textures/1-20-1/",
+    "Версия 1.19":        f"{SITE_EXPERT_BASE}/textures/1-19-4/",
+    "Версия 1.18":        f"{SITE_EXPERT_BASE}/textures/1-18-2/",
+    "Версия 1.16.5":      f"{SITE_EXPERT_BASE}/textures/1-16-5/",
+    "Версия 1.12.2":      f"{SITE_EXPERT_BASE}/textures/1-12-2/",
+    "Разрешение 16x16":   f"{SITE_EXPERT_BASE}/textures/16x16/",
+    "Разрешение 32x32":   f"{SITE_EXPERT_BASE}/textures/32x32/",
+    "Разрешение 64x64+":  f"{SITE_EXPERT_BASE}/textures/64x64/",
+}
+
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
     "Accept-Language": "ru,en;q=0.9",
 }
 THUMB_W, THUMB_H = 200, 140
-IMG_PLACEHOLDER = None
 
-# ── Texture helpers ───────────────────────────────────────────────────────────
+# ── Local Texture Helpers ─────────────────────────────────────────────────────
 def find_mc_jars(mc_path):
     jars = []
     vdir = mc_path / "versions"
@@ -143,22 +162,22 @@ def install_pack(pack_dir, mc):
     shutil.copytree(pack_dir, dest)
     return dest
 
-# ── Scraper (minecraft-inside.ru) ─────────────────────────────────────────────
-def fetch_html(url, retries=3):
-    for i in range(retries):
+# ── Scrapers ──────────────────────────────────────────────────────────────────
+def fetch_html(url, retries=2):
+    for _ in range(retries):
         try:
             r = requests.get(url, headers=HEADERS, timeout=12)
             r.raise_for_status()
             r.encoding = "utf-8"
             return BeautifulSoup(r.text, "html.parser")
         except Exception:
-            time.sleep(1)
+            time.sleep(0.5)
     return None
 
-def scrape_listing(url):
+# 1. Minecraft-Inside
+def scrape_inside_listing(url):
     soup = fetch_html(url)
-    if not soup:
-        return []
+    if not soup: return []
     packs, seen = [], set()
     for tag in soup.find_all(["article", "div", "li"]):
         a = tag.find("a", href=re.compile(r"/resource-packs/\d+-.+\.html"))
@@ -173,12 +192,12 @@ def scrape_listing(url):
         if img_tag:
             thumb = img_tag.get("src") or img_tag.get("data-src") or ""
             if thumb and not thumb.startswith("http"):
-                thumb = SITE_BASE + thumb
-        pack_url = href if href.startswith("http") else SITE_BASE + href
-        packs.append({"title": title, "url": pack_url, "thumb": thumb})
+                thumb = SITE_INSIDE_BASE + thumb
+        pack_url = href if href.startswith("http") else SITE_INSIDE_BASE + href
+        packs.append({"source": "inside", "title": html.unescape(title), "url": pack_url, "thumb": thumb})
     return packs
 
-def scrape_pack_detail(url):
+def scrape_inside_detail(url):
     soup = fetch_html(url)
     if not soup: return {}
     h1 = soup.find("h1")
@@ -189,19 +208,17 @@ def scrape_pack_detail(url):
         if not src or src in seen_imgs: continue
         try:
             if int(img.get("width", 999)) < 100 or int(img.get("height", 999)) < 100: continue
-        except Exception:
-            pass
-        if any(x in src for x in ["/avatars/", "/icons/", "/emoji/", "/logo"]):
-            continue
-        full = src if src.startswith("http") else SITE_BASE + src
+        except Exception: pass
+        if any(x in src for x in ["/avatars/", "/icons/", "/emoji/", "/logo"]): continue
+        full = src if src.startswith("http") else SITE_INSIDE_BASE + src
         seen_imgs.add(src)
         images.append(full)
     downloads = []
     for a in soup.find_all("a", href=re.compile(r"/download/\d+/")):
         label = a.get_text(strip=True)
         href  = a["href"]
-        dl_url = href if href.startswith("http") else SITE_BASE + href
-        entry = {"label": label or "Download", "url": dl_url}
+        dl_url = href if href.startswith("http") else SITE_INSIDE_BASE + href
+        entry = {"label": label or "Скачать", "url": dl_url, "is_cloud": False}
         if entry not in downloads:
             downloads.append(entry)
     desc_parts = []
@@ -210,9 +227,75 @@ def scrape_pack_detail(url):
         if len(txt) > 40 and "Скачать" not in txt and "http" not in txt:
             desc_parts.append(txt)
         if len(desc_parts) >= 4: break
-    return {"title": title, "images": images, "downloads": downloads, "description": "\n\n".join(desc_parts[:3])}
+    return {"title": html.unescape(title), "images": images, "downloads": downloads, "description": "\n\n".join(desc_parts[:3])}
 
-def fetch_image(url):
+# 2. MinecraftExpert
+def scrape_expert_listing(url):
+    soup = fetch_html(url)
+    if not soup: return []
+    packs, seen = [], set()
+    for tag in soup.find_all(["article", "div"]):
+        classes = " ".join(tag.get("class", []))
+        if "post" in classes and not any(x in classes for x in ["related", "meta", "widget"]):
+            a = tag.find("a", href=re.compile(r"minecraftexpert\.ru/[^/]+-texture/"))
+            if not a:
+                for link in tag.find_all("a", href=True):
+                    if "-texture" in link["href"] and "minecraftexpert.ru" in link["href"]:
+                        a = link
+                        break
+            if not a: continue
+            href = a["href"]
+            if href in seen: continue
+            seen.add(href)
+            title = a.get_text(strip=True) or a.get("title", "")
+            if not title:
+                h = tag.find(["h2", "h3"])
+                if h: title = h.get_text(strip=True)
+            if not title: continue
+            img_tag = tag.find("img")
+            thumb = ""
+            if img_tag:
+                thumb = img_tag.get("src") or img_tag.get("data-src") or ""
+                if not thumb and img_tag.get("srcset"):
+                    thumb = img_tag["srcset"].split(",")[0].split()[0]
+            packs.append({"source": "expert", "title": html.unescape(title), "url": href, "thumb": thumb})
+    return packs
+
+def scrape_expert_detail(url):
+    soup = fetch_html(url)
+    if not soup: return {}
+    h1 = soup.find("h1")
+    title = h1.get_text(strip=True) if h1 else ""
+    images, seen_imgs = [], set()
+    for a in soup.find_all("a", href=re.compile(r"\.(png|jpg|jpeg|webp)$", re.I)):
+        href = a["href"]
+        if href not in seen_imgs and not any(x in href for x in ["avatar", "icon", "logo"]):
+            seen_imgs.add(href)
+            images.append(href)
+    downloads = []
+    for div in soup.find_all("div", class_=re.compile(r"download-button")):
+        if "tg-button" in div.get("class", []): continue
+        a = div.find("a", href=True)
+        if not a: continue
+        raw_t = a.get_text(strip=True)
+        href = a["href"]
+        is_cloud = any(x in href for x in ["cloud.mail.ru", "yadi.sk", "drive.google", "mediafire"])
+        pfx = "☁️ [Облако] " if is_cloud else "⬇ "
+        label = pfx + (raw_t or "Скачать")
+        entry = {"label": html.unescape(label), "url": href, "is_cloud": is_cloud}
+        if entry not in downloads:
+            downloads.append(entry)
+    desc_parts = []
+    content_div = soup.find("div", class_=re.compile(r"post-content|entry-content"))
+    if content_div:
+        for p in content_div.find_all("p"):
+            txt = p.get_text(strip=True)
+            if len(txt) > 35 and not any(x in txt for x in ["Скачать", "http", "Версия", "Установка"]):
+                desc_parts.append(txt)
+            if len(desc_parts) >= 4: break
+    return {"title": html.unescape(title), "images": images, "downloads": downloads, "description": "\n\n".join(desc_parts[:3])}
+
+def fetch_image_pil(url):
     try:
         resp = requests.get(url, headers=HEADERS, timeout=12)
         resp.raise_for_status()
@@ -228,7 +311,7 @@ def resolve_download(dl_url):
             for a in soup.find_all("a", href=True):
                 href = a["href"]
                 if any(href.endswith(ext) for ext in [".zip", ".jar"]):
-                    return href if href.startswith("http") else SITE_BASE + href
+                    return href if href.startswith("http") else SITE_INSIDE_BASE + href
         return resp.url
     except Exception:
         return dl_url
@@ -265,7 +348,8 @@ def apply_style(root):
           fieldbackground=[("readonly", SURFACE), ("!disabled", SURFACE)],
           selectbackground=[("readonly", ACCENT), ("!disabled", ACCENT)],
           selectforeground=[("readonly", "#1e1e2e"), ("!disabled", "#1e1e2e")],
-          foreground=[("readonly", TEXT), ("!disabled", TEXT)])
+          foreground=[("readonly", TEXT), ("!disabled", TEXT)],
+          background=[("readonly", SURFACE), ("!disabled", SURFACE)])
     s.configure("Treeview", background=SURFACE, foreground=TEXT, rowheight=26, fieldbackground=SURFACE, borderwidth=0)
     s.configure("Treeview.Heading", background=BG, foreground=ACCENT, font=("Segoe UI", 10, "bold"))
     s.map("Treeview", background=[("selected", ACCENT)], foreground=[("selected", "#1e1e2e")])
@@ -277,10 +361,6 @@ def apply_style(root):
     s.configure("TProgressbar", troughcolor=SURFACE, background=ACCENT, borderwidth=0)
     s.configure("TLabelframe", background=BG, foreground=ACCENT)
     s.configure("TLabelframe.Label", background=BG, foreground=ACCENT, font=("Segoe UI", 10, "bold"))
-
-def make_placeholder(size=(128, 128)):
-    img = Image.new("RGBA", size, (49, 50, 68, 255))
-    return ImageTk.PhotoImage(img)
 
 # ── Tab 1: My Photos ──────────────────────────────────────────────────────────
 class TextureTab(tk.Frame):
@@ -528,14 +608,13 @@ class TextureTab(tk.Frame):
         self.set_status(f"Установлено: {dest}")
         messagebox.showinfo("Установлено!", f"Установлено в:\n{dest}\n\nНастройки > Пакеты ресурсов > выберите пак")
 
-# ── Tab 2: Browse Packs (minecraft-inside.ru) ─────────────────────────────────
+# ── Tab 2: Browse Packs (Minecraft-Inside.ru & MinecraftExpert.ru) ────────────
 class BrowseTab(tk.Frame):
     def __init__(self, parent, mc_path_var, status_fn):
         super().__init__(parent, bg=BG)
         self.mc_path_var = mc_path_var
         self.set_status = status_fn
         self._packs = []
-        self._thumb_cache = {}
         self._gallery_phs = []
         self._card_images = []
         self._current_page = 1
@@ -545,24 +624,36 @@ class BrowseTab(tk.Frame):
         top = tk.Frame(self, bg=BG, pady=6)
         top.pack(fill="x", padx=14)
 
-        tk.Label(top, text="Категория:", bg=BG, fg=SUBTEXT, font=("Segoe UI", 9)).pack(side="left")
-        self.cat_var = tk.StringVar(value="Все")
-        cat_cb = ttk.Combobox(top, textvariable=self.cat_var, values=list(SITE_CATEGORIES.keys()), state="readonly", width=18)
-        cat_cb.pack(side="left", padx=6)
-        cat_cb.bind("<<ComboboxSelected>>", lambda e: self._load_page(1))
+        # Site selection
+        tk.Label(top, text="Сайт:", bg=BG, fg=ACCENT, font=("Segoe UI", 9, "bold")).pack(side="left")
+        self.site_var = tk.StringVar(value="Minecraft-Inside.ru")
+        self.site_cb = ttk.Combobox(top, textvariable=self.site_var,
+                                    values=["Minecraft-Inside.ru", "MinecraftExpert.ru"],
+                                    state="readonly", width=20)
+        self.site_cb.pack(side="left", padx=6)
+        self.site_cb.bind("<<ComboboxSelected>>", self._on_site_change)
 
-        tk.Label(top, text="Поиск:", bg=BG, fg=SUBTEXT, font=("Segoe UI", 9)).pack(side="left", padx=(10, 0))
+        # Category
+        tk.Label(top, text="Категория:", bg=BG, fg=SUBTEXT, font=("Segoe UI", 9)).pack(side="left", padx=(6, 0))
+        self.cat_var = tk.StringVar(value="Все текстуры")
+        self.cat_cb = ttk.Combobox(top, textvariable=self.cat_var, values=list(INSIDE_CATEGORIES.keys()), state="readonly", width=18)
+        self.cat_cb.pack(side="left", padx=4)
+        self.cat_cb.bind("<<ComboboxSelected>>", lambda e: self._load_page(1))
+
+        # Search
+        tk.Label(top, text="Поиск:", bg=BG, fg=SUBTEXT, font=("Segoe UI", 9)).pack(side="left", padx=(8, 0))
         self.search_site = tk.StringVar()
-        s_ent = tk.Entry(top, textvariable=self.search_site, width=22, bg=SURFACE, fg=TEXT, insertbackground=TEXT, relief="flat")
+        s_ent = tk.Entry(top, textvariable=self.search_site, width=20, bg=SURFACE, fg=TEXT, insertbackground=TEXT, relief="flat")
         s_ent.pack(side="left", padx=4)
         s_ent.bind("<Return>", lambda e: self._do_search())
-        ttk.Button(top, text="Искать", command=self._do_search).pack(side="left", padx=4)
+        ttk.Button(top, text="Искать", command=self._do_search).pack(side="left", padx=3)
         ttk.Button(top, text="Обновить", command=lambda: self._load_page(1)).pack(side="left", padx=2)
 
+        # Pagination
         pag = tk.Frame(top, bg=BG)
         pag.pack(side="right")
         ttk.Button(pag, text="◀ Назад", command=lambda: self._load_page(self._current_page - 1)).pack(side="left", padx=2)
-        self.page_lbl = tk.Label(pag, text="Стр. 1", bg=BG, fg=SUBTEXT, font=("Segoe UI", 9))
+        self.page_lbl = tk.Label(pag, text="Стр. 1", bg=BG, fg=SUBTEXT, font=("Segoe UI", 9, "bold"))
         self.page_lbl.pack(side="left", padx=6)
         ttk.Button(pag, text="Вперед ▶", command=lambda: self._load_page(self._current_page + 1)).pack(side="left", padx=2)
 
@@ -576,6 +667,16 @@ class BrowseTab(tk.Frame):
         right = tk.Frame(paned, bg=BG)
         paned.add(right, minsize=360)
         self._build_detail(right)
+
+    def _on_site_change(self, event=None):
+        site = self.site_var.get()
+        if "Expert" in site:
+            self.cat_cb["values"] = list(EXPERT_CATEGORIES.keys())
+            self.cat_var.set("Все текстуры")
+        else:
+            self.cat_cb["values"] = list(INSIDE_CATEGORIES.keys())
+            self.cat_var.set("Все текстуры")
+        self._load_page(1)
 
     def _build_grid(self, parent):
         self.grid_canvas = tk.Canvas(parent, bg=BG, highlightthickness=0)
@@ -638,45 +739,60 @@ class BrowseTab(tk.Frame):
     def _load_page(self, page):
         if page < 1: return
         self._current_page = page
-        cat_url = SITE_CATEGORIES.get(self.cat_var.get(), SITE_BASE + "/resource-packs/")
-        if page == 1:
-            url = cat_url
-        else:
-            base = cat_url.rstrip("/").split("?")[0]
-            qs   = ("?" + cat_url.split("?")[1]) if "?" in cat_url else ""
-            url  = f"{base}/page/{page}/{qs}"
-
         self.page_lbl.config(text=f"Стр. {page}")
-        self.set_status(f"Загрузка страницы {page}...")
 
         for w in self.grid_frame.winfo_children():
             w.destroy()
         self._gallery_phs.clear()
         self._card_images.clear()
 
-        loading_lbl = tk.Label(self.grid_frame, text="⏳ Загрузка текстурпаков с minecraft-inside.ru...", bg=BG, fg=ACCENT, font=("Segoe UI", 11, "bold"))
-        loading_lbl.pack(pady=40)
-
-        threading.Thread(target=self._bg_listing, args=(url,), daemon=True).start()
+        is_expert = "Expert" in self.site_var.get()
+        if is_expert:
+            cat_url = EXPERT_CATEGORIES.get(self.cat_var.get(), f"{SITE_EXPERT_BASE}/textures/")
+            if page == 1:
+                url = cat_url
+            else:
+                base = cat_url.rstrip("/")
+                url  = f"{base}/page/{page}/"
+            self.set_status(f"Загрузка MinecraftExpert (стр. {page})...")
+            threading.Thread(target=self._bg_listing, args=(url, "expert"), daemon=True).start()
+        else:
+            cat_url = INSIDE_CATEGORIES.get(self.cat_var.get(), f"{SITE_INSIDE_BASE}/resource-packs/")
+            if page == 1:
+                url = cat_url
+            else:
+                base = cat_url.rstrip("/").split("?")[0]
+                qs   = ("?" + cat_url.split("?")[1]) if "?" in cat_url else ""
+                url  = f"{base}/page/{page}/{qs}"
+            self.set_status(f"Загрузка Minecraft-Inside (стр. {page})...")
+            threading.Thread(target=self._bg_listing, args=(url, "inside"), daemon=True).start()
 
     def _do_search(self):
         q = self.search_site.get().strip()
         if not q:
             self._load_page(1)
             return
-        url = SITE_BASE + "/search/?q=" + urllib.parse.quote(q) + "&type=resource-packs"
+        is_expert = "Expert" in self.site_var.get()
         self._current_page = 1
         self.page_lbl.config(text="Поиск")
         self.set_status("Поиск...")
         for w in self.grid_frame.winfo_children():
             w.destroy()
-        threading.Thread(target=self._bg_listing, args=(url,), daemon=True).start()
+        if is_expert:
+            url = f"{SITE_EXPERT_BASE}/?s=" + urllib.parse.quote(q)
+            threading.Thread(target=self._bg_listing, args=(url, "expert"), daemon=True).start()
+        else:
+            url = f"{SITE_INSIDE_BASE}/search/?q=" + urllib.parse.quote(q) + "&type=resource-packs"
+            threading.Thread(target=self._bg_listing, args=(url, "inside"), daemon=True).start()
 
-    def _bg_listing(self, url):
-        packs = scrape_listing(url)
+    def _bg_listing(self, url, site):
+        if site == "expert":
+            packs = scrape_expert_listing(url)
+        else:
+            packs = scrape_inside_listing(url)
         self._packs = packs
         self.after(0, lambda: self._render_cards(packs))
-        self.after(0, lambda: self.set_status(f"Найдено {len(packs)} паков"))
+        self.after(0, lambda: self.set_status(f"Найдено {len(packs)} паков ({self.site_var.get()})"))
 
     def _render_cards(self, packs):
         for w in self.grid_frame.winfo_children():
@@ -684,7 +800,8 @@ class BrowseTab(tk.Frame):
         self._card_images.clear()
 
         if not packs:
-            tk.Label(self.grid_frame, text="Ничего не найдено. Попробуйте другую категорию.", bg=BG, fg=SUBTEXT, font=("Segoe UI", 10)).pack(pady=40)
+            tk.Label(self.grid_frame, text="Ничего не найдено. Попробуйте другую категорию или поиск.",
+                     bg=BG, fg=SUBTEXT, font=("Segoe UI", 10)).pack(pady=40)
             self.grid_frame.update_idletasks()
             self.grid_canvas.configure(scrollregion=self.grid_canvas.bbox("all"))
             return
@@ -709,7 +826,7 @@ class BrowseTab(tk.Frame):
         if pack.get("thumb"):
             threading.Thread(target=self._load_thumb, args=(pack["thumb"], img_lbl), daemon=True).start()
 
-        title = pack["title"]
+        title = pack.get("title", "")
         if len(title) > 36: title = title[:33] + "..."
         tk.Label(card, text=title, bg=SURFACE, fg=TEXT, font=("Segoe UI", 9, "bold"), wraplength=180, justify="center").pack(pady=(4, 2))
 
@@ -730,7 +847,7 @@ class BrowseTab(tk.Frame):
         card.bind("<Leave>", on_leave)
 
     def _load_thumb(self, url, lbl):
-        img = fetch_image(url)
+        img = fetch_image_pil(url)
         if not img: return
         img = ImageOps.fit(img, (THUMB_W, THUMB_H), Image.LANCZOS)
         self.after(0, lambda: self._apply_thumb(lbl, img))
@@ -760,7 +877,10 @@ class BrowseTab(tk.Frame):
         threading.Thread(target=self._bg_detail, args=(pack,), daemon=True).start()
 
     def _bg_detail(self, pack):
-        detail = scrape_pack_detail(pack["url"])
+        if pack.get("source") == "expert":
+            detail = scrape_expert_detail(pack["url"])
+        else:
+            detail = scrape_inside_detail(pack["url"])
         self.after(0, lambda: self._render_detail(pack, detail))
 
     def _render_detail(self, pack, detail):
@@ -780,12 +900,12 @@ class BrowseTab(tk.Frame):
         for item in dls:
             label = item.get("label", "Скачать")
             if len(label) > 55: label = label[:52] + "..."
-            btn = ttk.Button(self.dl_frame, text="⬇ " + label, command=lambda u=item["url"]: self._download(u))
+            btn = ttk.Button(self.dl_frame, text=label, command=lambda it=item: self._handle_download(it))
             btn.pack(fill="x", pady=2)
         self.set_status(f"Выбран: {title}")
 
     def _load_gallery_img(self, url):
-        img = fetch_image(url)
+        img = fetch_image_pil(url)
         if not img: return
         h = 150
         ratio = h / max(1, img.height)
@@ -809,19 +929,27 @@ class BrowseTab(tk.Frame):
         threading.Thread(target=self._worker_view_full, args=(url,), daemon=True).start()
 
     def _worker_view_full(self, url):
-        img = fetch_image(url)
+        img = fetch_image_pil(url)
         if not img: return
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
             tmp = f.name
         img.save(tmp, "PNG")
         os.startfile(tmp)
 
-    def _download(self, dl_url):
+    def _handle_download(self, item):
+        url = item.get("url", "")
+        if item.get("is_cloud", False):
+            webbrowser.open(url)
+            messagebox.showinfo("Ссылка открыта в браузере",
+                "Страница облачного хранилища открыта в браузере.\n\nСкачайте архив и поместите его в папку:\n" +
+                str(Path(self.mc_path_var.get()) / "resourcepacks"))
+            return
+
         mc = Path(self.mc_path_var.get())
         init_dir = str(mc / "resourcepacks") if mc.exists() else str(Path.home())
         save_dir = filedialog.askdirectory(title="Сохранить текстурпак в...", initialdir=init_dir)
         if not save_dir: return
-        threading.Thread(target=self._bg_download, args=(dl_url, Path(save_dir)), daemon=True).start()
+        threading.Thread(target=self._bg_download, args=(url, Path(save_dir)), daemon=True).start()
 
     def _bg_download(self, dl_url, save_dir):
         self.after(0, lambda: self.set_status("Подготовка ссылки..."))
@@ -849,11 +977,11 @@ class BrowseTab(tk.Frame):
         self.prog_var.set(pct)
         self.prog_lbl.config(text=f"{done//1024} KB / {total//1024} KB ({pct:.0f}%)")
 
-# ── Main Window ───────────────────────────────────────────────────────────────
+# ── Main Application Window ───────────────────────────────────────────────────
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Minecraft Texture Replacer")
+        self.title("Minecraft Texture Replacer v2.7")
         self.geometry("1250x820")
         self.minsize(1050, 680)
         self.configure(bg=BG)
@@ -874,9 +1002,9 @@ class App(tk.Tk):
         self.tex_tab    = TextureTab(nb, self.mc_path_var, self._set_status)
         self.browse_tab = BrowseTab(nb, self.mc_path_var, self._set_status)
         nb.add(self.tex_tab,    text="  ✏️ Заменить на свои фото  ")
-        nb.add(self.browse_tab, text="  🌐 Каталог (minecraft-inside.ru)  ")
+        nb.add(self.browse_tab, text="  🌐 Каталог текстур (Minecraft-Inside + MinecraftExpert)  ")
 
-        # Auto-load page 1
+        # Load first page
         self.after(300, lambda: self.browse_tab._load_page(1))
 
         self.status_var = tk.StringVar(value="Готов к работе")
