@@ -1,0 +1,5 @@
+﻿# These are installed AUTOMATICALLY on first run.
+# No need to run pip manually.
+pillow>=10.0.0
+requests>=2.31.0
+beautifulsoup4>=4.12.0
