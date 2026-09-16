@@ -1,13 +1,13 @@
 ﻿"""
-Minecraft Texture Replacer v2.6
+Minecraft Texture Replacer v2.1
 =================================
 Tab 1 - Replace textures with your own photos
-Tab 2 - Browse packs from Modrinth (10,000+ packs) & Minecraft-Inside.ru
+Tab 2 - Browse resource packs from minecraft-inside.ru
 """
 
 import sys, subprocess, importlib
 
-# Auto-install dependencies if running directly from Python source
+# Auto-install dependencies if running from Python directly
 for _mod, _pkg in [("PIL", "pillow"), ("requests", "requests"), ("bs4", "beautifulsoup4")]:
     try:
         importlib.import_module(_mod)
@@ -15,20 +15,17 @@ for _mod, _pkg in [("PIL", "pillow"), ("requests", "requests"), ("bs4", "beautif
         if not getattr(sys, "frozen", False):
             subprocess.check_call([sys.executable, "-m", "pip", "install", "--quiet", _pkg])
 
-import io, json, os, re, shutil, tempfile, time, zipfile
+import io, json, os, re, shutil, tempfile, threading, time, zipfile
 import urllib.parse
 from pathlib import Path
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
+from tkinter import filedialog, messagebox, ttk
 
 import requests
 from bs4 import BeautifulSoup
 from PIL import Image, ImageOps, ImageTk
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# CONSTANTS AND PALETTE
-# ═══════════════════════════════════════════════════════════════════════════════
-
+# ── Colors ────────────────────────────────────────────────────────────────────
 BG      = "#1e1e2e"
 SURFACE = "#313244"
 ACCENT  = "#89b4fa"
@@ -39,7 +36,6 @@ WARNING = "#f38ba8"
 
 TEXTURE_SIZES = [16, 32, 64, 128, 256]
 DEFAULT_MC = Path.home() / "AppData" / "Roaming" / ".minecraft"
-
 TEXTURE_CATEGORIES = {
     "Blocks":      "textures/block",
     "Items":       "textures/item",
@@ -48,52 +44,26 @@ TEXTURE_CATEGORIES = {
     "GUI":         "textures/gui",
     "All":         "",
 }
-
 SITE_BASE = "https://minecraft-inside.ru"
-
-MC_INSIDE_CATEGORIES = {
-    "Все текстуры":          f"{SITE_BASE}/resource-packs/",
-    "Популярные":            f"{SITE_BASE}/resource-packs/?sort=rating",
-    "Посещаемые":            f"{SITE_BASE}/resource-packs/?sort=visits",
-    "PvP паки":              f"{SITE_BASE}/resource-packs/pvp/",
-    "Реалистичные":          f"{SITE_BASE}/resource-packs/realism/",
-    "3D текстуры":           f"{SITE_BASE}/resource-packs/3d/",
-    "Средневековые":         f"{SITE_BASE}/resource-packs/medieval/",
-    "Современные":           f"{SITE_BASE}/resource-packs/modern/",
-    "Мультяшные":            f"{SITE_BASE}/resource-packs/mult/",
-    "FPS (Оптимизация)":     f"{SITE_BASE}/resource-packs/fps/",
-    "CIT (С переименованием)": f"{SITE_BASE}/resource-packs/cit/",
+SITE_CATEGORIES = {
+    "Все":          SITE_BASE + "/resource-packs/",
+    "PvP":          SITE_BASE + "/resource-packs/pvp/",
+    "Реалистичные": SITE_BASE + "/resource-packs/realism/",
+    "3D":           SITE_BASE + "/resource-packs/3d/",
+    "Современные":  SITE_BASE + "/resource-packs/modern/",
+    "Средневековые":SITE_BASE + "/resource-packs/medieval/",
+    "Мультяшные":   SITE_BASE + "/resource-packs/mult/",
+    "FPS":          SITE_BASE + "/resource-packs/fps/",
+    "Популярные":   SITE_BASE + "/resource-packs/?sort=rating",
 }
-
-MC_VERSIONS = [
-    "Все версии",
-    "1.21",
-    "1.20",
-    "1.19",
-    "1.18",
-    "1.16.5",
-    "1.12.2",
-    "1.7.10",
-]
-
-MODRINTH_SORTS = {
-    "По скачиваниям (Top)": "downloads",
-    "По популярности":     "follows",
-    "Новинки":             "newest",
-    "Недавно обновленные":  "updated",
-}
-
 HEADERS = {
-    "User-Agent": "MCTextureReplacer/2.6 (github.com/minecraft_Textures_maker)",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
     "Accept-Language": "ru,en;q=0.9",
 }
+THUMB_W, THUMB_H = 200, 140
+IMG_PLACEHOLDER = None
 
-THUMB_W, THUMB_H = 190, 130
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# LOCAL TEXTURE HELPERS
-# ═══════════════════════════════════════════════════════════════════════════════
-
+# ── Texture helpers ───────────────────────────────────────────────────────────
 def find_mc_jars(mc_path):
     jars = []
     vdir = mc_path / "versions"
@@ -173,78 +143,52 @@ def install_pack(pack_dir, mc):
     shutil.copytree(pack_dir, dest)
     return dest
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# ONLINE REPOSITORIES: MINECRAFT-INSIDE & MODRINTH
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def fetch_html(url, retries=2):
-    for _ in range(retries):
+# ── Scraper (minecraft-inside.ru) ─────────────────────────────────────────────
+def fetch_html(url, retries=3):
+    for i in range(retries):
         try:
             r = requests.get(url, headers=HEADERS, timeout=12)
             r.raise_for_status()
             r.encoding = "utf-8"
             return BeautifulSoup(r.text, "html.parser")
         except Exception:
-            time.sleep(0.5)
+            time.sleep(1)
     return None
 
-def scrape_mc_inside_listing(base_url, page=1):
-    packs = []
-    seen = set()
-    for p in (page * 2 - 1, page * 2):
-        if p == 1:
-            page_url = base_url
-        else:
-            base_clean = base_url.rstrip("/").split("?")[0]
-            qs = ("?" + base_url.split("?")[1]) if "?" in base_url else ""
-            page_url = f"{base_clean}/page/{p}/{qs}"
-
-        soup = fetch_html(page_url)
-        if not soup:
-            continue
-
-        for tag in soup.find_all(["article", "div", "li"]):
-            a = tag.find("a", href=re.compile(r"/resource-packs/\d+-.+\.html"))
-            if not a:
-                continue
-            href = a["href"]
-            if href in seen:
-                continue
-            seen.add(href)
-            title = a.get_text(strip=True)
-            if not title:
-                continue
-            img_tag = tag.find("img")
-            thumb = ""
-            if img_tag:
-                thumb = img_tag.get("src") or img_tag.get("data-src") or ""
-                if thumb and not thumb.startswith("http"):
-                    thumb = SITE_BASE + thumb
-            pack_url = href if href.startswith("http") else SITE_BASE + href
-            packs.append({
-                "source": "minecraft-inside",
-                "id": pack_url,
-                "title": title,
-                "url": pack_url,
-                "thumb": thumb,
-                "desc_short": "Minecraft-Inside.ru"
-            })
-    return packs
-
-def scrape_mc_inside_detail(url):
+def scrape_listing(url):
     soup = fetch_html(url)
     if not soup:
-        return {}
+        return []
+    packs, seen = [], set()
+    for tag in soup.find_all(["article", "div", "li"]):
+        a = tag.find("a", href=re.compile(r"/resource-packs/\d+-.+\.html"))
+        if not a: continue
+        href = a["href"]
+        if href in seen: continue
+        seen.add(href)
+        title = a.get_text(strip=True)
+        if not title: continue
+        img_tag = tag.find("img")
+        thumb = ""
+        if img_tag:
+            thumb = img_tag.get("src") or img_tag.get("data-src") or ""
+            if thumb and not thumb.startswith("http"):
+                thumb = SITE_BASE + thumb
+        pack_url = href if href.startswith("http") else SITE_BASE + href
+        packs.append({"title": title, "url": pack_url, "thumb": thumb})
+    return packs
+
+def scrape_pack_detail(url):
+    soup = fetch_html(url)
+    if not soup: return {}
     h1 = soup.find("h1")
     title = h1.get_text(strip=True) if h1 else ""
     images, seen_imgs = [], set()
     for img in soup.find_all("img"):
         src = img.get("src") or img.get("data-src") or ""
-        if not src or src in seen_imgs:
-            continue
+        if not src or src in seen_imgs: continue
         try:
-            if int(img.get("width", 999)) < 100 or int(img.get("height", 999)) < 100:
-                continue
+            if int(img.get("width", 999)) < 100 or int(img.get("height", 999)) < 100: continue
         except Exception:
             pass
         if any(x in src for x in ["/avatars/", "/icons/", "/emoji/", "/logo"]):
@@ -252,111 +196,23 @@ def scrape_mc_inside_detail(url):
         full = src if src.startswith("http") else SITE_BASE + src
         seen_imgs.add(src)
         images.append(full)
-
     downloads = []
     for a in soup.find_all("a", href=re.compile(r"/download/\d+/")):
         label = a.get_text(strip=True)
-        href = a["href"]
+        href  = a["href"]
         dl_url = href if href.startswith("http") else SITE_BASE + href
-        entry = {"label": label or "Скачать", "url": dl_url, "direct": False}
+        entry = {"label": label or "Download", "url": dl_url}
         if entry not in downloads:
             downloads.append(entry)
-
     desc_parts = []
     for p in soup.find_all("p"):
         txt = p.get_text(strip=True)
         if len(txt) > 40 and "Скачать" not in txt and "http" not in txt:
             desc_parts.append(txt)
-        if len(desc_parts) >= 4:
-            break
+        if len(desc_parts) >= 4: break
+    return {"title": title, "images": images, "downloads": downloads, "description": "\n\n".join(desc_parts[:3])}
 
-    return {
-        "title": title,
-        "images": images,
-        "downloads": downloads,
-        "description": "\n\n".join(desc_parts[:3])
-    }
-
-def modrinth_search(query="", version="Все версии", sort="downloads", page=1, limit=24):
-    offset = (page - 1) * limit
-    facets = [["project_type:resourcepack"]]
-    if version != "Все версии":
-        facets.append([f"versions:{version}"])
-
-    params = {
-        "query": query,
-        "facets": json.dumps(facets),
-        "index": sort,
-        "offset": offset,
-        "limit": limit
-    }
-    try:
-        r = requests.get("https://api.modrinth.com/v2/search", params=params, headers=HEADERS, timeout=12)
-        r.raise_for_status()
-        data = r.json()
-        packs = []
-        for hit in data.get("hits", []):
-            thumb = hit.get("icon_url") or ""
-            if not thumb and hit.get("gallery"):
-                thumb = hit["gallery"][0]
-            packs.append({
-                "source": "modrinth",
-                "id": hit["project_id"],
-                "title": hit.get("title", ""),
-                "url": f"https://modrinth.com/resourcepack/{hit.get('slug', hit['project_id'])}",
-                "thumb": thumb,
-                "desc_short": hit.get("description", "")[:80] + "...",
-                "downloads_count": hit.get("downloads", 0),
-                "versions": hit.get("versions", [])
-            })
-        return packs
-    except Exception as e:
-        print(f"[modrinth] {e}")
-        return []
-
-def modrinth_pack_detail(project_id):
-    images = []
-    downloads = []
-    description = ""
-    title = ""
-
-    try:
-        p_res = requests.get(f"https://api.modrinth.com/v2/project/{project_id}", headers=HEADERS, timeout=12)
-        if p_res.status_code == 200:
-            p_data = p_res.json()
-            title = p_data.get("title", "")
-            description = p_data.get("description", "")
-            for g in p_data.get("gallery", []):
-                if g.get("url"):
-                    images.append(g["url"])
-
-        v_res = requests.get(f"https://api.modrinth.com/v2/project/{project_id}/version", headers=HEADERS, timeout=12)
-        if v_res.status_code == 200:
-            v_list = v_res.json()
-            for v in v_list[:12]:
-                v_name = v.get("name") or v.get("version_number", "v1.0")
-                game_vers = ", ".join(v.get("game_versions", [])[:3])
-                for f in v.get("files", []):
-                    if f.get("primary", False) or f.get("filename", "").endswith(".zip"):
-                        size_mb = f.get("size", 0) / (1024 * 1024)
-                        downloads.append({
-                            "label": f"{v_name} [{game_vers}] ({size_mb:.1f} MB)",
-                            "url": f["url"],
-                            "filename": f.get("filename", "pack.zip"),
-                            "direct": True
-                        })
-                        break
-    except Exception as e:
-        print(f"[modrinth_detail] {e}")
-
-    return {
-        "title": title,
-        "images": images,
-        "downloads": downloads,
-        "description": description
-    }
-
-def fetch_image_pil(url):
+def fetch_image(url):
     try:
         resp = requests.get(url, headers=HEADERS, timeout=12)
         resp.raise_for_status()
@@ -366,7 +222,7 @@ def fetch_image_pil(url):
 
 def resolve_download(dl_url):
     try:
-        resp = requests.get(dl_url, headers=HEADERS, timeout=15, allow_redirects=True)
+        resp = requests.get(dl_url, headers=HEADERS, timeout=12, allow_redirects=True)
         if "text/html" in resp.headers.get("content-type", ""):
             soup = BeautifulSoup(resp.text, "html.parser")
             for a in soup.find_all("a", href=True):
@@ -382,7 +238,7 @@ def download_file(url, dest_path, progress_cb=None):
         resp = requests.get(url, headers=HEADERS, stream=True, timeout=60)
         resp.raise_for_status()
         total = int(resp.headers.get("content-length", 0))
-        done = 0
+        done  = 0
         with open(dest_path, "wb") as f:
             for chunk in resp.iter_content(chunk_size=65536):
                 if chunk:
@@ -395,16 +251,12 @@ def download_file(url, dest_path, progress_cb=None):
         print(f"[download] {e}")
         return False
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# STYLES
-# ═══════════════════════════════════════════════════════════════════════════════
-
+# ── Style ─────────────────────────────────────────────────────────────────────
 def apply_style(root):
     s = ttk.Style(root)
     s.theme_use("clam")
     s.configure(".", background=BG, foreground=TEXT, fieldbackground=SURFACE, font=("Segoe UI", 10))
-    s.configure("TButton", background=ACCENT, foreground="#1e1e2e",
-                font=("Segoe UI", 10, "bold"), relief="flat", padding=(10, 5))
+    s.configure("TButton", background=ACCENT, foreground="#1e1e2e", font=("Segoe UI", 10, "bold"), relief="flat", padding=(10, 5))
     s.map("TButton", background=[("active", "#74c7ec"), ("pressed", "#89dceb")])
     s.configure("TLabel", background=BG, foreground=TEXT)
     s.configure("TEntry", fieldbackground=SURFACE, foreground=TEXT, insertcolor=TEXT)
@@ -413,29 +265,24 @@ def apply_style(root):
           fieldbackground=[("readonly", SURFACE), ("!disabled", SURFACE)],
           selectbackground=[("readonly", ACCENT), ("!disabled", ACCENT)],
           selectforeground=[("readonly", "#1e1e2e"), ("!disabled", "#1e1e2e")],
-          foreground=[("readonly", TEXT), ("!disabled", TEXT)],
-          background=[("readonly", SURFACE), ("!disabled", SURFACE)])
-
-    s.configure("Treeview", background=SURFACE, foreground=TEXT, rowheight=26,
-                fieldbackground=SURFACE, borderwidth=0)
+          foreground=[("readonly", TEXT), ("!disabled", TEXT)])
+    s.configure("Treeview", background=SURFACE, foreground=TEXT, rowheight=26, fieldbackground=SURFACE, borderwidth=0)
     s.configure("Treeview.Heading", background=BG, foreground=ACCENT, font=("Segoe UI", 10, "bold"))
     s.map("Treeview", background=[("selected", ACCENT)], foreground=[("selected", "#1e1e2e")])
     s.configure("TNotebook", background=BG, borderwidth=0)
-    s.configure("TNotebook.Tab", background=SURFACE, foreground=SUBTEXT,
-                padding=(14, 7), font=("Segoe UI", 11, "bold"))
+    s.configure("TNotebook.Tab", background=SURFACE, foreground=SUBTEXT, padding=(14, 7), font=("Segoe UI", 11, "bold"))
     s.map("TNotebook.Tab", background=[("selected", ACCENT)], foreground=[("selected", "#1e1e2e")])
     s.configure("TFrame", background=BG)
     s.configure("TScrollbar", background=SURFACE, troughcolor=BG, arrowcolor=SUBTEXT, borderwidth=0)
-    s.configure("TCheckbutton", background=BG, foreground=TEXT)
-    s.configure("TRadiobutton", background=BG, foreground=TEXT)
     s.configure("TProgressbar", troughcolor=SURFACE, background=ACCENT, borderwidth=0)
     s.configure("TLabelframe", background=BG, foreground=ACCENT)
     s.configure("TLabelframe.Label", background=BG, foreground=ACCENT, font=("Segoe UI", 10, "bold"))
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# TAB 1 - MY PHOTOS
-# ═══════════════════════════════════════════════════════════════════════════════
+def make_placeholder(size=(128, 128)):
+    img = Image.new("RGBA", size, (49, 50, 68, 255))
+    return ImageTk.PhotoImage(img)
 
+# ── Tab 1: My Photos ──────────────────────────────────────────────────────────
 class TextureTab(tk.Frame):
     def __init__(self, parent, mc_path_var, status_fn):
         super().__init__(parent, bg=BG)
@@ -477,11 +324,10 @@ class TextureTab(tk.Frame):
         bot = tk.Frame(self, bg=SURFACE, pady=8)
         bot.pack(fill="x", side="bottom")
         tk.Label(bot, text="Название пака:", bg=SURFACE, fg=SUBTEXT, font=("Segoe UI", 9)).pack(side="left", padx=(16, 4))
-        tk.Entry(bot, textvariable=self.pack_name, width=24, bg=BG, fg=TEXT,
-                 insertbackground=TEXT, relief="flat").pack(side="left", padx=(0, 10))
-        ttk.Button(bot, text="📁 Сохранить папку", command=self._save_folder).pack(side="left", padx=3)
-        ttk.Button(bot, text="🗜 Сохранить ZIP",    command=self._save_zip).pack(side="left", padx=3)
-        ttk.Button(bot, text="🚀 Установить в Minecraft", command=self._install).pack(side="left", padx=3)
+        tk.Entry(bot, textvariable=self.pack_name, width=24, bg=BG, fg=TEXT, insertbackground=TEXT, relief="flat").pack(side="left", padx=(0, 10))
+        ttk.Button(bot, text="📁 Папка", command=self._save_folder).pack(side="left", padx=3)
+        ttk.Button(bot, text="🗜 ZIP", command=self._save_zip).pack(side="left", padx=3)
+        ttk.Button(bot, text="🚀 Установить в MC", command=self._install).pack(side="left", padx=3)
 
     def _build_left(self, p):
         r = tk.Frame(p, bg=BG, pady=2)
@@ -496,13 +342,10 @@ class TextureTab(tk.Frame):
         tk.Label(r2, text="Поиск:", bg=BG, fg=SUBTEXT, font=("Segoe UI", 9)).pack(side="left")
         self.search_var = tk.StringVar()
         self.search_var.trace_add("write", lambda *_: self._filter())
-        tk.Entry(r2, textvariable=self.search_var, width=24, bg=SURFACE, fg=TEXT,
-                 insertbackground=TEXT, relief="flat").pack(side="left", padx=6)
+        tk.Entry(r2, textvariable=self.search_var, width=24, bg=SURFACE, fg=TEXT, insertbackground=TEXT, relief="flat").pack(side="left", padx=6)
         lf = tk.Frame(p, bg=BG)
         lf.pack(fill="both", expand=True, pady=4)
-        self.tex_list = tk.Listbox(lf, bg=SURFACE, fg=TEXT, selectbackground=ACCENT,
-                                   selectforeground="#1e1e2e", relief="flat",
-                                   font=("Consolas", 9), activestyle="none")
+        self.tex_list = tk.Listbox(lf, bg=SURFACE, fg=TEXT, selectbackground=ACCENT, selectforeground="#1e1e2e", relief="flat", font=("Consolas", 9), activestyle="none")
         sb = ttk.Scrollbar(lf, command=self.tex_list.yview)
         self.tex_list.configure(yscrollcommand=sb.set)
         self.tex_list.pack(side="left", fill="both", expand=True)
@@ -531,28 +374,21 @@ class TextureTab(tk.Frame):
         mr.pack(fill="x", padx=8, pady=4)
         tk.Label(mr, text="Масштаб:", bg=BG, fg=TEXT, font=("Segoe UI", 9)).pack(side="left")
         for txt, val in [("Fill", "fill"), ("Fit", "fit"), ("Stretch", "stretch"), ("Tile", "tile")]:
-            tk.Radiobutton(mr, text=txt, variable=self.fit_mode, value=val,
-                           bg=BG, fg=TEXT, selectcolor=SURFACE, activebackground=BG,
-                           command=self._update_preview).pack(side="left", padx=5)
+            tk.Radiobutton(mr, text=txt, variable=self.fit_mode, value=val, bg=BG, fg=TEXT, selectcolor=SURFACE, activebackground=BG, command=self._update_preview).pack(side="left", padx=5)
         sr = tk.Frame(sf, bg=BG)
         sr.pack(fill="x", padx=8, pady=4)
         tk.Label(sr, text="Размер:", bg=BG, fg=TEXT, font=("Segoe UI", 9)).pack(side="left")
-        self.size_combo = ttk.Combobox(sr, values=[str(s) for s in TEXTURE_SIZES],
-                                       width=6, state="readonly")
+        self.size_combo = ttk.Combobox(sr, values=[str(s) for s in TEXTURE_SIZES], width=6, state="readonly")
         self.size_combo.set("16")
         self.size_combo.pack(side="left", padx=(4, 14))
-        self.size_combo.bind("<<ComboboxSelected>>", lambda e: (
-            self.size_var.set(int(self.size_combo.get())),
-            self._update_preview()))
-        tk.Checkbutton(sr, text="Прозрачность (RGBA)", variable=self.keep_alpha,
-                       bg=BG, fg=TEXT, selectcolor=SURFACE, activebackground=BG,
-                       command=self._update_preview).pack(side="left")
+        self.size_combo.bind("<<ComboboxSelected>>", lambda e: (self.size_var.set(int(self.size_combo.get())), self._update_preview()))
+        tk.Checkbutton(sr, text="Сохранять альфа-канал", variable=self.keep_alpha, bg=BG, fg=TEXT, selectcolor=SURFACE, activebackground=BG, command=self._update_preview).pack(side="left")
         pr = tk.Frame(p, bg=BG)
         pr.pack(fill="x", pady=6)
-        ttk.Button(pr, text="📷 Выбрать фото", command=self._browse_img).pack(side="left")
+        ttk.Button(pr, text="Выбрать фото", command=self._browse_img).pack(side="left")
         self.photo_lbl = tk.Label(pr, text="Файл не выбран", bg=BG, fg=SUBTEXT, font=("Segoe UI", 9))
         self.photo_lbl.pack(side="left", padx=10)
-        ttk.Button(p, text="➕ Добавить замену", command=self._add).pack(fill="x", pady=4)
+        ttk.Button(p, text="Добавить замену", command=self._add).pack(fill="x", pady=4)
         rf = ttk.LabelFrame(p, text=" Запланированные замены ")
         rf.pack(fill="both", expand=True, pady=4)
         cols = ("texture", "photo", "mode", "size")
@@ -564,12 +400,12 @@ class TextureTab(tk.Frame):
         self.rep_tree.configure(yscrollcommand=rsb.set)
         self.rep_tree.pack(side="left", fill="both", expand=True)
         rsb.pack(side="right", fill="y")
-        ttk.Button(p, text="🗑 Удалить выбранное", command=self._remove).pack(fill="x")
+        ttk.Button(p, text="Удалить выбранное", command=self._remove).pack(fill="x")
 
     def _load_jars(self):
         jars = find_mc_jars(Path(self.mc_path_var.get()))
         if not jars:
-            messagebox.showwarning("Не найдено", "Файлы версий .jar не найдены.\nПроверьте путь к .minecraft.")
+            messagebox.showwarning("Не найдено", "Файлы версий .jar не найдены.")
             return
         self._jars = jars
         self.jar_combo["values"] = [j.stem for j in jars]
@@ -614,8 +450,7 @@ class TextureTab(tk.Frame):
         self._update_preview()
 
     def _browse_img(self):
-        p = filedialog.askopenfilename(title="Выберите фото",
-            filetypes=[("Изображения", "*.png *.jpg *.jpeg *.bmp *.gif *.webp *.tiff"), ("Все файлы", "*.*")])
+        p = filedialog.askopenfilename(title="Выберите фото", filetypes=[("Изображения", "*.png *.jpg *.jpeg *.bmp *.gif *.webp *.tiff")])
         if p:
             self.user_image_path = p
             short = Path(p).name
@@ -636,17 +471,16 @@ class TextureTab(tk.Frame):
 
     def _add(self):
         if not self.selected_texture:
-            messagebox.showwarning("Нет текстуры", "Сначала выберите текстуру из списка.")
+            messagebox.showwarning("Нет текстуры", "Выберите текстуру.")
             return
         if not self.user_image_path:
-            messagebox.showwarning("Нет фото", "Сначала выберите фото.")
+            messagebox.showwarning("Нет фото", "Выберите фото.")
             return
         sz   = self.size_var.get()
         mode = self.fit_mode.get()
         img  = process_image(self.user_image_path, (sz, sz), mode, self.keep_alpha.get())
         self.replacements.append({"mc_path": self.selected_texture, "image": img})
-        self.rep_tree.insert("", "end", values=(
-            Path(self.selected_texture).name, Path(self.user_image_path).name, mode, f"{sz}px"))
+        self.rep_tree.insert("", "end", values=(Path(self.selected_texture).name, Path(self.user_image_path).name, mode, f"{sz}px"))
         self.set_status(f"Добавлено: {Path(self.selected_texture).name}")
 
     def _remove(self):
@@ -680,115 +514,68 @@ class TextureTab(tk.Frame):
         zp = zip_pack(pd)
         shutil.rmtree(pd, ignore_errors=True)
         self.set_status(f"Сохранено: {zp}")
-        messagebox.showinfo("Готово!", f"ZIP архив сохранен в:\n{zp}")
+        messagebox.showinfo("Готово!", f"ZIP сохранен в:\n{zp}")
 
     def _install(self):
         if not self._check(): return
         mc = Path(self.mc_path_var.get())
         if not mc.exists():
-            messagebox.showerror("Ошибка", f"Папка .minecraft не найдена:\n{mc}")
+            messagebox.showerror("Ошибка", f".minecraft не найдена:\n{mc}")
             return
         with tempfile.TemporaryDirectory() as tmp:
             pd   = build_pack(Path(tmp) / self.pack_name.get(), self.replacements)
             dest = install_pack(pd, mc)
         self.set_status(f"Установлено: {dest}")
-        messagebox.showinfo("Установлено!",
-            f"Ресурспак установлен в папку игры:\n{dest}\n\nВ игре: Настройки -> Пакеты ресурсов -> включите пак.")
+        messagebox.showinfo("Установлено!", f"Установлено в:\n{dest}\n\nНастройки > Пакеты ресурсов > выберите пак")
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# TAB 2 - BROWSE PACKS (MODRINTH + MINECRAFT-INSIDE)
-# ═══════════════════════════════════════════════════════════════════════════════
-
+# ── Tab 2: Browse Packs (minecraft-inside.ru) ─────────────────────────────────
 class BrowseTab(tk.Frame):
     def __init__(self, parent, mc_path_var, status_fn):
         super().__init__(parent, bg=BG)
         self.mc_path_var = mc_path_var
         self.set_status = status_fn
         self._packs = []
-        self._current_page = 1
+        self._thumb_cache = {}
+        self._gallery_phs = []
         self._card_images = []
+        self._current_page = 1
         self._build()
 
     def _build(self):
-        # 1. Top controls bar
-        top = tk.Frame(self, bg=BG, pady=8)
+        top = tk.Frame(self, bg=BG, pady=6)
         top.pack(fill="x", padx=14)
 
-        tk.Label(top, text="Источник:", bg=BG, fg=ACCENT, font=("Segoe UI", 9, "bold")).pack(side="left")
-        self.source_var = tk.StringVar(value="Modrinth (10,000+ паков)")
-        self.source_cb = ttk.Combobox(top, textvariable=self.source_var,
-                                      values=["Modrinth (10,000+ паков)", "Minecraft-Inside.ru"],
-                                      state="readonly", width=25)
-        self.source_cb.pack(side="left", padx=(4, 10))
-        self.source_cb.bind("<<ComboboxSelected>>", self._on_source_change)
+        tk.Label(top, text="Категория:", bg=BG, fg=SUBTEXT, font=("Segoe UI", 9)).pack(side="left")
+        self.cat_var = tk.StringVar(value="Все")
+        cat_cb = ttk.Combobox(top, textvariable=self.cat_var, values=list(SITE_CATEGORIES.keys()), state="readonly", width=18)
+        cat_cb.pack(side="left", padx=6)
+        cat_cb.bind("<<ComboboxSelected>>", lambda e: self._load_page(1))
 
-        self.cat_lbl = tk.Label(top, text="Сортировка:", bg=BG, fg=SUBTEXT, font=("Segoe UI", 9))
-        self.cat_lbl.pack(side="left")
-        self.cat_var = tk.StringVar(value="По скачиваниям (Top)")
-        self.cat_cb = ttk.Combobox(top, textvariable=self.cat_var,
-                                   values=list(MODRINTH_SORTS.keys()),
-                                   state="readonly", width=22)
-        self.cat_cb.pack(side="left", padx=(4, 10))
-        self.cat_cb.bind("<<ComboboxSelected>>", lambda e: self._load_page(1))
-
-        tk.Label(top, text="Версия:", bg=BG, fg=SUBTEXT, font=("Segoe UI", 9)).pack(side="left")
-        self.ver_var = tk.StringVar(value="Все версии")
-        self.ver_cb = ttk.Combobox(top, textvariable=self.ver_var,
-                                   values=MC_VERSIONS,
-                                   state="readonly", width=12)
-        self.ver_cb.pack(side="left", padx=(4, 10))
-        self.ver_cb.bind("<<ComboboxSelected>>", lambda e: self._load_page(1))
-
-        tk.Label(top, text="Поиск:", bg=BG, fg=SUBTEXT, font=("Segoe UI", 9)).pack(side="left")
+        tk.Label(top, text="Поиск:", bg=BG, fg=SUBTEXT, font=("Segoe UI", 9)).pack(side="left", padx=(10, 0))
         self.search_site = tk.StringVar()
-        s_ent = tk.Entry(top, textvariable=self.search_site, width=18, bg=SURFACE, fg=TEXT,
-                         insertbackground=TEXT, relief="flat", font=("Segoe UI", 9))
-        s_ent.pack(side="left", padx=(4, 4))
-        s_ent.bind("<Return>", lambda e: self._load_page(1))
+        s_ent = tk.Entry(top, textvariable=self.search_site, width=22, bg=SURFACE, fg=TEXT, insertbackground=TEXT, relief="flat")
+        s_ent.pack(side="left", padx=4)
+        s_ent.bind("<Return>", lambda e: self._do_search())
+        ttk.Button(top, text="Искать", command=self._do_search).pack(side="left", padx=4)
+        ttk.Button(top, text="Обновить", command=lambda: self._load_page(1)).pack(side="left", padx=2)
 
-        ttk.Button(top, text="Искать", command=lambda: self._load_page(1)).pack(side="left", padx=3)
-        ttk.Button(top, text="Сброс", command=self._reset_filters).pack(side="left", padx=2)
-
-        # Pagination
         pag = tk.Frame(top, bg=BG)
         pag.pack(side="right")
         ttk.Button(pag, text="◀ Назад", command=lambda: self._load_page(self._current_page - 1)).pack(side="left", padx=2)
-        self.page_lbl = tk.Label(pag, text="Стр. 1", bg=BG, fg=SUBTEXT, font=("Segoe UI", 9, "bold"))
+        self.page_lbl = tk.Label(pag, text="Стр. 1", bg=BG, fg=SUBTEXT, font=("Segoe UI", 9))
         self.page_lbl.pack(side="left", padx=6)
         ttk.Button(pag, text="Вперед ▶", command=lambda: self._load_page(self._current_page + 1)).pack(side="left", padx=2)
 
-        # 2. Main split
         paned = tk.PanedWindow(self, orient="horizontal", bg=BG, sashwidth=6, sashrelief="flat")
         paned.pack(fill="both", expand=True, padx=12, pady=(0, 6))
 
         left = tk.Frame(paned, bg=BG)
-        paned.add(left, minsize=520)
+        paned.add(left, minsize=480)
         self._build_grid(left)
 
         right = tk.Frame(paned, bg=BG)
-        paned.add(right, minsize=380)
+        paned.add(right, minsize=360)
         self._build_detail(right)
-
-    def _reset_filters(self):
-        self.search_site.set("")
-        self.ver_var.set("Все версии")
-        if "Modrinth" in self.source_var.get():
-            self.cat_var.set("По скачиваниям (Top)")
-        else:
-            self.cat_var.set("Все текстуры")
-        self._load_page(1)
-
-    def _on_source_change(self, event=None):
-        src = self.source_var.get()
-        if "Modrinth" in src:
-            self.cat_lbl.config(text="Сортировка:")
-            self.cat_cb["values"] = list(MODRINTH_SORTS.keys())
-            self.cat_var.set("По скачиваниям (Top)")
-        else:
-            self.cat_lbl.config(text="Категория:")
-            self.cat_cb["values"] = list(MC_INSIDE_CATEGORIES.keys())
-            self.cat_var.set("Все текстуры")
-        self._load_page(1)
 
     def _build_grid(self, parent):
         self.grid_canvas = tk.Canvas(parent, bg=BG, highlightthickness=0)
@@ -800,24 +587,20 @@ class BrowseTab(tk.Frame):
         self.grid_frame = tk.Frame(self.grid_canvas, bg=BG)
         self._grid_win = self.grid_canvas.create_window((0, 0), window=self.grid_frame, anchor="nw")
 
-        def _on_f_config(e):
+        def on_f_configure(e):
             self.grid_canvas.configure(scrollregion=self.grid_canvas.bbox("all"))
-
-        def _on_c_config(e):
-            if e.width > 100:
+        def on_c_configure(e):
+            if e.width > 50:
                 self.grid_canvas.itemconfig(self._grid_win, width=e.width)
 
-        self.grid_frame.bind("<Configure>", _on_f_config)
-        self.grid_canvas.bind("<Configure>", _on_c_config)
+        self.grid_frame.bind("<Configure>", on_f_configure)
+        self.grid_canvas.bind("<Configure>", on_c_configure)
         self.grid_canvas.bind_all("<MouseWheel>", lambda e: self.grid_canvas.yview_scroll(-1*(e.delta//120), "units"))
 
     def _build_detail(self, parent):
-        self.detail_title = tk.Label(parent, text="👈 Нажмите на любой пак из каталога",
-                                     bg=BG, fg=ACCENT, font=("Segoe UI", 12, "bold"),
-                                     wraplength=350, justify="left")
+        self.detail_title = tk.Label(parent, text="👈 Нажмите на любой пак", bg=BG, fg=ACCENT, font=("Segoe UI", 12, "bold"), wraplength=340, justify="left")
         self.detail_title.pack(anchor="w", padx=10, pady=(8, 4))
 
-        # Gallery
         gal_outer = tk.Frame(parent, bg=SURFACE, height=180)
         gal_outer.pack(fill="x", padx=10, pady=4)
         gal_outer.pack_propagate(False)
@@ -830,12 +613,9 @@ class BrowseTab(tk.Frame):
         self._gal_win = self.gal_canvas.create_window((0, 0), window=self.gal_inner, anchor="nw")
         self.gal_inner.bind("<Configure>", lambda e: self.gal_canvas.configure(scrollregion=self.gal_canvas.bbox("all")))
 
-        # Description
-        self.detail_desc = tk.Text(parent, bg=SURFACE, fg=TEXT, relief="flat",
-                                   font=("Segoe UI", 9), wrap="word", height=6, state="disabled")
+        self.detail_desc = tk.Text(parent, bg=SURFACE, fg=TEXT, relief="flat", font=("Segoe UI", 9), wrap="word", height=5, state="disabled")
         self.detail_desc.pack(fill="x", padx=10, pady=4)
 
-        # Downloads
         dl_lf = ttk.LabelFrame(parent, text=" Скачать версии ")
         dl_lf.pack(fill="both", expand=True, padx=10, pady=4)
 
@@ -849,7 +629,6 @@ class BrowseTab(tk.Frame):
         self.dl_frame.bind("<Configure>", lambda e: dl_canvas.configure(scrollregion=dl_canvas.bbox("all")))
         dl_canvas.bind("<Configure>", lambda e: dl_canvas.itemconfig(dl_win, width=e.width))
 
-        # Progress bar
         self.prog_var = tk.DoubleVar()
         self.prog_bar = ttk.Progressbar(parent, variable=self.prog_var, maximum=100)
         self.prog_bar.pack(fill="x", padx=10, pady=(4, 2))
@@ -859,42 +638,45 @@ class BrowseTab(tk.Frame):
     def _load_page(self, page):
         if page < 1: return
         self._current_page = page
+        cat_url = SITE_CATEGORIES.get(self.cat_var.get(), SITE_BASE + "/resource-packs/")
+        if page == 1:
+            url = cat_url
+        else:
+            base = cat_url.rstrip("/").split("?")[0]
+            qs   = ("?" + cat_url.split("?")[1]) if "?" in cat_url else ""
+            url  = f"{base}/page/{page}/{qs}"
+
         self.page_lbl.config(text=f"Стр. {page}")
-        self.set_status(f"Загрузка каталога (стр. {page})...")
+        self.set_status(f"Загрузка страницы {page}...")
 
         for w in self.grid_frame.winfo_children():
             w.destroy()
+        self._gallery_phs.clear()
         self._card_images.clear()
 
-        # Loading banner
-        loading_lbl = tk.Label(self.grid_frame, text="⏳ Загрузка текстурпаков...",
-                               bg=BG, fg=ACCENT, font=("Segoe UI", 12, "bold"))
-        loading_lbl.pack(pady=60)
+        loading_lbl = tk.Label(self.grid_frame, text="⏳ Загрузка текстурпаков с minecraft-inside.ru...", bg=BG, fg=ACCENT, font=("Segoe UI", 11, "bold"))
+        loading_lbl.pack(pady=40)
 
-        is_modrinth = "Modrinth" in self.source_var.get()
-        query = self.search_site.get().strip()
-        version = self.ver_var.get()
+        threading.Thread(target=self._bg_listing, args=(url,), daemon=True).start()
 
-        if is_modrinth:
-            sort = MODRINTH_SORTS.get(self.cat_var.get(), "downloads")
-            threading.Thread(target=self._bg_load_modrinth, args=(query, version, sort, page), daemon=True).start()
-        else:
-            cat_url = MC_INSIDE_CATEGORIES.get(self.cat_var.get(), f"{SITE_BASE}/resource-packs/")
-            if version != "Все версии":
-                cat_url = f"{SITE_BASE}/resource-packs/{version}/"
-            threading.Thread(target=self._bg_load_mc_inside, args=(cat_url, page), daemon=True).start()
+    def _do_search(self):
+        q = self.search_site.get().strip()
+        if not q:
+            self._load_page(1)
+            return
+        url = SITE_BASE + "/search/?q=" + urllib.parse.quote(q) + "&type=resource-packs"
+        self._current_page = 1
+        self.page_lbl.config(text="Поиск")
+        self.set_status("Поиск...")
+        for w in self.grid_frame.winfo_children():
+            w.destroy()
+        threading.Thread(target=self._bg_listing, args=(url,), daemon=True).start()
 
-    def _bg_load_modrinth(self, query, version, sort, page):
-        packs = modrinth_search(query=query, version=version, sort=sort, page=page, limit=24)
+    def _bg_listing(self, url):
+        packs = scrape_listing(url)
         self._packs = packs
         self.after(0, lambda: self._render_cards(packs))
-        self.after(0, lambda: self.set_status(f"Найдено {len(packs)} паков (Modrinth)"))
-
-    def _bg_load_mc_inside(self, base_url, page):
-        packs = scrape_mc_inside_listing(base_url, page=page)
-        self._packs = packs
-        self.after(0, lambda: self._render_cards(packs))
-        self.after(0, lambda: self.set_status(f"Найдено {len(packs)} паков (Minecraft-Inside)"))
+        self.after(0, lambda: self.set_status(f"Найдено {len(packs)} паков"))
 
     def _render_cards(self, packs):
         for w in self.grid_frame.winfo_children():
@@ -902,8 +684,7 @@ class BrowseTab(tk.Frame):
         self._card_images.clear()
 
         if not packs:
-            tk.Label(self.grid_frame, text="Ничего не найдено.\nПопробуйте изменить поисковый запрос или фильтры.",
-                     bg=BG, fg=SUBTEXT, font=("Segoe UI", 11)).pack(pady=60)
+            tk.Label(self.grid_frame, text="Ничего не найдено. Попробуйте другую категорию.", bg=BG, fg=SUBTEXT, font=("Segoe UI", 10)).pack(pady=40)
             self.grid_frame.update_idletasks()
             self.grid_canvas.configure(scrollregion=self.grid_canvas.bbox("all"))
             return
@@ -923,20 +704,14 @@ class BrowseTab(tk.Frame):
         parent.columnconfigure(col, weight=1)
 
         img_lbl = tk.Label(card, bg="#2a2b3d", width=25, height=7)
-        img_lbl.pack(pady=2)
+        img_lbl.pack()
 
         if pack.get("thumb"):
-            threading.Thread(target=self._worker_fetch_thumb, args=(pack["thumb"], img_lbl), daemon=True).start()
+            threading.Thread(target=self._load_thumb, args=(pack["thumb"], img_lbl), daemon=True).start()
 
-        title = pack.get("title", "Без названия")
-        if len(title) > 34: title = title[:31] + "..."
-        tk.Label(card, text=title, bg=SURFACE, fg=TEXT,
-                 font=("Segoe UI", 9, "bold"), wraplength=180, justify="center").pack(pady=(4, 2))
-
-        sub = pack.get("desc_short", "")
-        if sub:
-            tk.Label(card, text=sub, bg=SURFACE, fg=SUBTEXT,
-                     font=("Segoe UI", 8), wraplength=180, justify="center").pack()
+        title = pack["title"]
+        if len(title) > 36: title = title[:33] + "..."
+        tk.Label(card, text=title, bg=SURFACE, fg=TEXT, font=("Segoe UI", 9, "bold"), wraplength=180, justify="center").pack(pady=(4, 2))
 
         for w in (card, img_lbl):
             w.bind("<Button-1>", lambda e, p=pack: self._open_detail(p))
@@ -954,15 +729,14 @@ class BrowseTab(tk.Frame):
         card.bind("<Enter>", on_enter)
         card.bind("<Leave>", on_leave)
 
-    def _worker_fetch_thumb(self, url, lbl):
-        img = fetch_image_pil(url)
-        if img:
-            img = ImageOps.fit(img, (THUMB_W, THUMB_H), Image.LANCZOS)
+    def _load_thumb(self, url, lbl):
+        img = fetch_image(url)
+        if not img: return
+        img = ImageOps.fit(img, (THUMB_W, THUMB_H), Image.LANCZOS)
         self.after(0, lambda: self._apply_thumb(lbl, img))
 
     def _apply_thumb(self, lbl, img):
-        if not img or not lbl.winfo_exists():
-            return
+        if not lbl.winfo_exists(): return
         try:
             ph = ImageTk.PhotoImage(img)
             self._card_images.append(ph)
@@ -975,6 +749,7 @@ class BrowseTab(tk.Frame):
         self.detail_title.config(text=f"Загрузка: {pack.get('title', '')}...")
         for w in self.gal_inner.winfo_children():
             w.destroy()
+        self._gallery_phs.clear()
         for w in self.dl_frame.winfo_children():
             w.destroy()
         self.detail_desc.configure(state="normal")
@@ -985,10 +760,7 @@ class BrowseTab(tk.Frame):
         threading.Thread(target=self._bg_detail, args=(pack,), daemon=True).start()
 
     def _bg_detail(self, pack):
-        if pack["source"] == "modrinth":
-            detail = modrinth_pack_detail(pack["id"])
-        else:
-            detail = scrape_mc_inside_detail(pack["url"])
+        detail = scrape_pack_detail(pack["url"])
         self.after(0, lambda: self._render_detail(pack, detail))
 
     def _render_detail(self, pack, detail):
@@ -1000,22 +772,20 @@ class BrowseTab(tk.Frame):
         self.detail_desc.configure(state="disabled")
 
         for url in (detail.get("images") or [])[:8]:
-            threading.Thread(target=self._worker_fetch_gallery, args=(url,), daemon=True).start()
+            threading.Thread(target=self._load_gallery_img, args=(url,), daemon=True).start()
 
         dls = detail.get("downloads", [])
         if not dls:
-            tk.Label(self.dl_frame, text="Файлы для скачивания не найдены", bg=BG, fg=SUBTEXT, font=("Segoe UI", 9)).pack(pady=8)
+            tk.Label(self.dl_frame, text="Файлы не найдены", bg=BG, fg=SUBTEXT, font=("Segoe UI", 9)).pack(pady=6)
         for item in dls:
             label = item.get("label", "Скачать")
-            btn = ttk.Button(self.dl_frame,
-                             text="⬇ " + label,
-                             command=lambda it=item: self._download(it))
+            if len(label) > 55: label = label[:52] + "..."
+            btn = ttk.Button(self.dl_frame, text="⬇ " + label, command=lambda u=item["url"]: self._download(u))
             btn.pack(fill="x", pady=2)
-
         self.set_status(f"Выбран: {title}")
 
-    def _worker_fetch_gallery(self, url):
-        img = fetch_image_pil(url)
+    def _load_gallery_img(self, url):
+        img = fetch_image(url)
         if not img: return
         h = 150
         ratio = h / max(1, img.height)
@@ -1027,7 +797,7 @@ class BrowseTab(tk.Frame):
         if not self.gal_inner.winfo_exists(): return
         try:
             ph = ImageTk.PhotoImage(img)
-            self._card_images.append(ph)
+            self._gallery_phs.append(ph)
             lbl = tk.Label(self.gal_inner, image=ph, bg=SURFACE, cursor="hand2")
             lbl.pack(side="left", padx=4, pady=4)
             lbl._ph = ph
@@ -1039,31 +809,24 @@ class BrowseTab(tk.Frame):
         threading.Thread(target=self._worker_view_full, args=(url,), daemon=True).start()
 
     def _worker_view_full(self, url):
-        img = fetch_image_pil(url)
+        img = fetch_image(url)
         if not img: return
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
             tmp = f.name
         img.save(tmp, "PNG")
         os.startfile(tmp)
 
-    def _download(self, item):
+    def _download(self, dl_url):
         mc = Path(self.mc_path_var.get())
         init_dir = str(mc / "resourcepacks") if mc.exists() else str(Path.home())
         save_dir = filedialog.askdirectory(title="Сохранить текстурпак в...", initialdir=init_dir)
         if not save_dir: return
-        threading.Thread(target=self._bg_download, args=(item, Path(save_dir)), daemon=True).start()
+        threading.Thread(target=self._bg_download, args=(dl_url, Path(save_dir)), daemon=True).start()
 
-    def _bg_download(self, item, save_dir):
-        dl_url = item["url"]
-        self.after(0, lambda: self.set_status("Подготовка к скачиванию..."))
-
-        if item.get("direct", False):
-            real_url = dl_url
-            fname = item.get("filename") or real_url.split("/")[-1].split("?")[0] or "resourcepack.zip"
-        else:
-            real_url = resolve_download(dl_url)
-            fname = real_url.split("/")[-1].split("?")[0] or "resourcepack.zip"
-
+    def _bg_download(self, dl_url, save_dir):
+        self.after(0, lambda: self.set_status("Подготовка ссылки..."))
+        real_url = resolve_download(dl_url)
+        fname = real_url.split("/")[-1].split("?")[0] or "resourcepack.zip"
         if not (fname.endswith(".zip") or fname.endswith(".jar")):
             fname += ".zip"
         dest = save_dir / fname
@@ -1076,67 +839,54 @@ class BrowseTab(tk.Frame):
         self.after(0, lambda: self.set_status(f"Скачивание {fname}..."))
         ok = download_file(real_url, dest, prog_cb)
         if ok:
-            self.after(0, lambda: self.set_status(f"Успешно сохранено: {dest.name}"))
-            self.after(0, lambda: messagebox.showinfo("Готово!",
-                f"Текстурпак сохранен в:\n{dest}\n\nЕсли это папка .minecraft/resourcepacks, он уже доступен в игре!"))
+            self.after(0, lambda: self.set_status(f"Сохранено: {dest.name}"))
+            self.after(0, lambda: messagebox.showinfo("Готово!", f"Текстурпак сохранен в:\n{dest}\n\nВ игре: Настройки > Пакеты ресурсов > выберите его."))
         else:
             self.after(0, lambda: self.set_status("Ошибка скачивания", err=True))
-            self.after(0, lambda: messagebox.showerror("Ошибка", "Не удалось скачать файл. Ссылка:\n" + dl_url))
+            self.after(0, lambda: messagebox.showerror("Ошибка", "Не удалось скачать. Ссылка:\n" + dl_url))
 
     def _upd_prog(self, pct, done, total):
         self.prog_var.set(pct)
-        kb_done  = done  // 1024
-        kb_total = total // 1024
-        self.prog_lbl.config(text=f"{kb_done} KB / {kb_total} KB ({pct:.0f}%)")
+        self.prog_lbl.config(text=f"{done//1024} KB / {total//1024} KB ({pct:.0f}%)")
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# MAIN APPLICATION
-# ═══════════════════════════════════════════════════════════════════════════════
-
+# ── Main Window ───────────────────────────────────────────────────────────────
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Minecraft Texture Replacer v2.6")
-        self.geometry("1280x840")
-        self.minsize(1080, 700)
+        self.title("Minecraft Texture Replacer")
+        self.geometry("1250x820")
+        self.minsize(1050, 680)
         self.configure(bg=BG)
         apply_style(self)
 
         self.mc_path_var = tk.StringVar(value=str(DEFAULT_MC))
 
-        # Header
         hdr = tk.Frame(self, bg=SURFACE, pady=12)
         hdr.pack(fill="x")
-        tk.Label(hdr, text="🎮 Minecraft Texture Replacer",
-                 font=("Segoe UI", 18, "bold"), bg=SURFACE, fg=ACCENT).pack(side="left", padx=16)
-
-        tk.Label(hdr, text="Папка .minecraft:", bg=SURFACE, fg=SUBTEXT,
-                 font=("Segoe UI", 9)).pack(side="left", padx=(20, 4))
-        tk.Entry(hdr, textvariable=self.mc_path_var, width=46,
-                 bg=BG, fg=TEXT, insertbackground=TEXT, relief="flat", font=("Segoe UI", 9)).pack(side="left")
+        tk.Label(hdr, text="🎮 Minecraft Texture Replacer", font=("Segoe UI", 18, "bold"), bg=SURFACE, fg=ACCENT).pack(side="left", padx=16)
+        tk.Label(hdr, text="Папка .minecraft:", bg=SURFACE, fg=SUBTEXT, font=("Segoe UI", 9)).pack(side="left", padx=(20, 4))
+        tk.Entry(hdr, textvariable=self.mc_path_var, width=46, bg=BG, fg=TEXT, insertbackground=TEXT, relief="flat", font=("Segoe UI", 9)).pack(side="left")
         ttk.Button(hdr, text="Обзор", command=self._browse_mc).pack(side="left", padx=6)
 
-        # Tabs
         nb = ttk.Notebook(self)
         nb.pack(fill="both", expand=True)
 
         self.tex_tab    = TextureTab(nb, self.mc_path_var, self._set_status)
         self.browse_tab = BrowseTab(nb, self.mc_path_var, self._set_status)
         nb.add(self.tex_tab,    text="  ✏️ Заменить на свои фото  ")
-        nb.add(self.browse_tab, text="  🌐 Каталог текстур (Modrinth + Minecraft-Inside)  ")
+        nb.add(self.browse_tab, text="  🌐 Каталог (minecraft-inside.ru)  ")
 
+        # Auto-load page 1
         self.after(300, lambda: self.browse_tab._load_page(1))
 
-        # Status bar
         self.status_var = tk.StringVar(value="Готов к работе")
         sb = tk.Frame(self, bg=SURFACE, pady=5)
         sb.pack(fill="x", side="bottom")
-        self._status_lbl = tk.Label(sb, textvariable=self.status_var,
-                                    bg=SURFACE, fg=SUCCESS, font=("Segoe UI", 9))
+        self._status_lbl = tk.Label(sb, textvariable=self.status_var, bg=SURFACE, fg=SUCCESS, font=("Segoe UI", 9))
         self._status_lbl.pack(side="left", padx=16)
 
     def _browse_mc(self):
-        p = filedialog.askdirectory(title="Выберите папку .minecraft")
+        p = filedialog.askdirectory(title="Папка .minecraft")
         if p: self.mc_path_var.set(p)
 
     def _set_status(self, msg, err=False):
