@@ -1,10 +1,9 @@
 """
-Minecraft Texture Replacer v2.7
+Minecraft Texture Replacer v3.0
 =================================
-Tab 1 - Replace textures with your own photos
-Tab 2 - Browse texture packs from:
-        * Minecraft-Inside.ru
-        * MinecraftExpert.ru
+Tab 1 - Replace textures with your own photos (Totem, Grass, etc.)
+Tab 2 - Download texture packs from GitHub with 1.png / 1.jpg screenshot preview
+Tab 3 - Browse texture packs from Minecraft-Inside.ru & MinecraftExpert.ru
 """
 
 import sys, subprocess, importlib
@@ -17,7 +16,7 @@ for _mod, _pkg in [("PIL", "pillow"), ("requests", "requests"), ("bs4", "beautif
         if not getattr(sys, "frozen", False):
             subprocess.check_call([sys.executable, "-m", "pip", "install", "--quiet", _pkg])
 
-import html, io, json, os, re, shutil, tempfile, threading, time, webbrowser, zipfile
+import html, io, json, os, posixpath, re, shutil, tempfile, threading, time, webbrowser, zipfile
 import urllib.parse
 from pathlib import Path
 import tkinter as tk
@@ -25,7 +24,7 @@ from tkinter import filedialog, messagebox, ttk
 
 import requests
 from bs4 import BeautifulSoup
-from PIL import Image, ImageOps, ImageTk
+from PIL import Image, ImageDraw, ImageOps, ImageTk
 
 # ── Colors & Theme ────────────────────────────────────────────────────────────
 BG      = "#1e1e2e"
@@ -327,6 +326,143 @@ def fetch_image_pil(url):
     except Exception:
         return None
 
+def extract_gdrive_id(url_or_id):
+    s = url_or_id.strip()
+    m = re.search(r"(?:/file/d/|id=)([a-zA-Z0-9_-]{25,})", s)
+    if m: return m.group(1)
+    if re.match(r"^[a-zA-Z0-9_-]{25,}$", s): return s
+    return None
+
+def download_from_gdrive(file_id, dest_target, progress_cb=None):
+    session = requests.Session()
+    session.headers.update(HEADERS)
+    base_url = "https://drive.google.com/uc?export=download"
+    resp = session.get(base_url, params={"id": file_id}, stream=True, timeout=30)
+    
+    token = None
+    for k, v in session.cookies.items():
+        if k.startswith("download_warning"):
+            token = v
+            break
+            
+    content_type = resp.headers.get("content-type", "").lower()
+    if token:
+        resp = session.get(base_url, params={"id": file_id, "confirm": token}, stream=True, timeout=60)
+    elif "text/html" in content_type:
+        text = resp.text
+        m_conf = re.search(r'confirm=([0-9A-Za-z_]+)', text)
+        if m_conf:
+            resp = session.get(base_url, params={"id": file_id, "confirm": m_conf.group(1)}, stream=True, timeout=60)
+        else:
+            soup = BeautifulSoup(text, "html.parser")
+            form = soup.find("form", id="download-form") or soup.find("a", id="uc-download-link")
+            if form:
+                action = form.get("action") or form.get("href")
+                if action:
+                    if not action.startswith("http"):
+                        action = "https://drive.google.com" + action
+                    resp = session.get(action, stream=True, timeout=60)
+            else:
+                if "access denied" in text.lower() or "доступ" in text.lower():
+                    raise Exception("Нет доступа к Google Диску! Включите «Доступ всем, у кого есть ссылка».")
+                raise Exception("Google Диск не отдал файл. Проверьте права доступа к файлу.")
+
+    resp.raise_for_status()
+
+    cd = resp.headers.get("content-disposition", "")
+    filename = None
+    if "filename=" in cd:
+        m_fn = re.search(r'filename\*?=(?:UTF-8\'\')?["\']?([^"\';]+)["\']?', cd)
+        if m_fn:
+            filename = urllib.parse.unquote(m_fn.group(1))
+
+    if not filename:
+        if isinstance(dest_target, Path) and not dest_target.is_dir() and dest_target.name.endswith(".zip"):
+            filename = dest_target.name
+        else:
+            filename = "ResourcePack_GDrive.zip"
+
+    actual_dest = (dest_target / filename) if (isinstance(dest_target, Path) and dest_target.is_dir()) else Path(dest_target)
+    
+    total = int(resp.headers.get("content-length", 0))
+    done = 0
+    with open(actual_dest, "wb") as f:
+        for chunk in resp.iter_content(chunk_size=65536):
+            if chunk:
+                f.write(chunk)
+                done += len(chunk)
+                if progress_cb:
+                    progress_cb(done, total)
+    return actual_dest
+
+def is_yandex_disk(url):
+    return any(domain in url for domain in ["disk.yandex.ru", "disk.yandex.com", "yadi.sk"])
+
+def download_from_yandex(yandex_url, dest_target, progress_cb=None):
+    api_url = "https://cloud-api.yandex.net/v1/disk/public/resources/download"
+    resp = requests.get(api_url, params={"public_key": yandex_url}, timeout=15)
+    if resp.status_code != 200:
+        raise Exception(f"Ошибка Яндекс.Диска ({resp.status_code}). Проверьте, что ссылка публичная.")
+    data = resp.json()
+    direct_url = data.get("href")
+    if not direct_url:
+        raise Exception("Не удалось получить прямую ссылку с Яндекс.Диска.")
+    
+    filename = data.get("name")
+    if not filename:
+        parsed = urllib.parse.urlparse(direct_url)
+        qs = urllib.parse.parse_qs(parsed.query)
+        if "filename" in qs:
+            filename = qs["filename"][0]
+    if not filename:
+        filename = "ResourcePack_Yandex.zip"
+        
+    actual_dest = (dest_target / filename) if (isinstance(dest_target, Path) and dest_target.is_dir()) else Path(dest_target)
+    return download_file(direct_url, actual_dest, progress_cb)
+
+def download_file(url, dest_path, progress_cb=None, referer=None):
+    headers = dict(HEADERS)
+    if referer:
+        headers["Referer"] = referer
+    elif "minecraft-inside" in url:
+        headers["Referer"] = "https://minecraft-inside.ru/"
+    elif "minecraftexpert" in url:
+        headers["Referer"] = "https://minecraftexpert.ru/"
+
+    if "dropbox.com" in url:
+        url = url.replace("?dl=0", "?dl=1")
+        if "?dl=1" not in url:
+            url += "?dl=1"
+
+    resp = requests.get(url, headers=headers, stream=True, timeout=60)
+    resp.raise_for_status()
+
+    cd = resp.headers.get("content-disposition", "")
+    filename = None
+    if "filename=" in cd:
+        m_fn = re.search(r'filename\*?=(?:UTF-8\'\')?["\']?([^"\';]+)["\']?', cd)
+        if m_fn:
+            filename = urllib.parse.unquote(m_fn.group(1))
+
+    if not filename:
+        p_name = Path(urllib.parse.urlparse(url).path).name
+        filename = p_name if p_name else "resourcepack.zip"
+        if not (filename.endswith(".zip") or filename.endswith(".jar")):
+            filename += ".zip"
+
+    actual_dest = (dest_path / filename) if (isinstance(dest_path, Path) and dest_path.is_dir()) else Path(dest_path)
+    
+    total = int(resp.headers.get("content-length", 0))
+    done = 0
+    with open(actual_dest, "wb") as f:
+        for chunk in resp.iter_content(chunk_size=65536):
+            if chunk:
+                f.write(chunk)
+                done += len(chunk)
+                if progress_cb:
+                    progress_cb(done, total)
+    return actual_dest
+
 def resolve_download(dl_url):
     try:
         resp = requests.get(dl_url, headers=HEADERS, timeout=12, allow_redirects=True)
@@ -340,23 +476,15 @@ def resolve_download(dl_url):
     except Exception:
         return dl_url
 
-def download_file(url, dest_path, progress_cb=None):
-    try:
-        resp = requests.get(url, headers=HEADERS, stream=True, timeout=60)
-        resp.raise_for_status()
-        total = int(resp.headers.get("content-length", 0))
-        done  = 0
-        with open(dest_path, "wb") as f:
-            for chunk in resp.iter_content(chunk_size=65536):
-                if chunk:
-                    f.write(chunk)
-                    done += len(chunk)
-                    if progress_cb:
-                        progress_cb(done, total)
-        return True
-    except Exception as e:
-        print(f"[download] {e}")
-        return False
+def download_universal_pack(link, dest_target, progress_cb=None, referer=None):
+    link = link.strip()
+    gid = extract_gdrive_id(link)
+    if gid and ("drive.google" in link or "docs.google" in link or len(link) < 50):
+        return download_from_gdrive(gid, dest_target, progress_cb)
+    elif is_yandex_disk(link):
+        return download_from_yandex(link, dest_target, progress_cb)
+    else:
+        return download_file(link, dest_target, progress_cb, referer=referer)
 
 # ── Style ─────────────────────────────────────────────────────────────────────
 def apply_style(root):
@@ -1070,18 +1198,28 @@ class BrowseTab(tk.Frame):
 
     def _handle_download(self, item):
         url = item.get("url", "")
+        # If it's a cloud link that we can download directly (Google Drive or Yandex.Disk)
+        if extract_gdrive_id(url) or is_yandex_disk(url):
+            mc = Path(self.mc_path_var.get())
+            dest_dir = (mc / "resourcepacks") if mc.exists() else Path.home()
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            threading.Thread(target=self._bg_download, args=(url, dest_dir), daemon=True).start()
+            return
+
         if item.get("is_cloud", False):
             webbrowser.open(url)
-            messagebox.showinfo("Ссылка открыта в браузере",
-                "Страница облачного хранилища открыта в браузере.\n\nСкачайте архив и поместите его в папку:\n" +
-                str(Path(self.mc_path_var.get()) / "resourcepacks"))
+            messagebox.showinfo(
+                "Ссылка открыта в браузере",
+                "Страница облачного хранилища открыта в браузере.\n\n"
+                "1. Скачайте архив через браузер.\n"
+                "2. Во вкладке «Облако» нажмите «Установить свой .ZIP», чтобы добавить его в Minecraft!"
+            )
             return
 
         mc = Path(self.mc_path_var.get())
-        init_dir = str(mc / "resourcepacks") if mc.exists() else str(Path.home())
-        save_dir = filedialog.askdirectory(title="Сохранить текстурпак в...", initialdir=init_dir)
-        if not save_dir: return
-        threading.Thread(target=self._bg_download, args=(url, Path(save_dir)), daemon=True).start()
+        dest_dir = (mc / "resourcepacks") if mc.exists() else Path.home()
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        threading.Thread(target=self._bg_download, args=(url, dest_dir), daemon=True).start()
 
     def _bg_download(self, dl_url, save_dir):
         self.after(0, lambda: self.set_status("Подготовка ссылки..."))
@@ -1089,31 +1227,752 @@ class BrowseTab(tk.Frame):
         fname = real_url.split("/")[-1].split("?")[0] or "resourcepack.zip"
         if not (fname.endswith(".zip") or fname.endswith(".jar")):
             fname += ".zip"
-        dest = save_dir / fname
 
         def prog_cb(done, total):
             if total > 0:
                 pct = done / total * 100
-                self.after(0, lambda p=pct, d=done, t=total: self._upd_prog(p, d, t))
+                mb_d = done / (1024 * 1024)
+                mb_t = total / (1024 * 1024)
+                self.after(0, lambda p=pct, d=mb_d, t=mb_t: self._upd_prog(p, d, t))
 
         self.after(0, lambda: self.set_status(f"Скачивание {fname}..."))
-        ok = download_file(real_url, dest, prog_cb)
-        if ok:
-            self.after(0, lambda: self.set_status(f"Сохранено: {dest.name}"))
-            self.after(0, lambda: messagebox.showinfo("Готово!", f"Текстурпак сохранен в:\n{dest}\n\nВ игре: Настройки > Пакеты ресурсов > выберите его."))
-        else:
+        ref = "https://minecraft-inside.ru/" if "inside" in dl_url else "https://minecraftexpert.ru/"
+        try:
+            saved = download_universal_pack(real_url, save_dir, prog_cb, referer=ref)
+            self.after(0, lambda: self.set_status(f"Сохранено: {saved.name}"))
+            self.after(0, lambda: messagebox.showinfo(
+                "Готово! Текстурпак установлен",
+                f"Текстурпак «{saved.name}» успешно скачан в папку resourcepacks!\n\n"
+                f"Как включить в игре:\n"
+                f"1. Откройте Minecraft ➔ Настройки ➔ Наборы ресурсов (Resource Packs)\n"
+                f"2. Переместите «{saved.name}» стрелочкой вправо ➔ «Готово»!\n\n"
+                f"(Или нажмите сочетание F3 + T для мгновенной перезагрузки)"
+            ))
+        except Exception as e:
             self.after(0, lambda: self.set_status("Ошибка скачивания", err=True))
-            self.after(0, lambda: messagebox.showerror("Ошибка", "Не удалось скачать. Ссылка:\n" + dl_url))
+            ans = messagebox.askyesno(
+                "Ошибка скачивания с сайта",
+                f"Сайт не отдал файл напрямую (возможна защита Cloudflare от ботов):\n{e}\n\n"
+                f"Открыть страницу в браузере, чтобы скачать вручную?\n\n"
+                f"(После скачивания вы сможете установить его в 1 клик кнопкой «Установить свой .ZIP» во вкладке «Облако»)"
+            )
+            if ans:
+                webbrowser.open(dl_url)
 
-    def _upd_prog(self, pct, done, total):
+    def _upd_prog(self, pct, mb_done, mb_total):
         self.prog_var.set(pct)
-        self.prog_lbl.config(text=f"{done//1024} KB / {total//1024} KB ({pct:.0f}%)")
+        self.prog_lbl.config(text=f"{mb_done:.1f} MB / {mb_total:.1f} MB ({pct:.0f}%)")
+
+DEFAULT_GITHUB_REPO = "olegcool2/minecraft_Textures_maker"
+
+def fetch_github_packs(repo=DEFAULT_GITHUB_REPO):
+    repo = repo.strip().strip("/")
+    if not repo:
+        repo = DEFAULT_GITHUB_REPO
+    packs = []
+    seen_urls = set()
+    headers = dict(HEADERS)
+    headers["Accept"] = "application/vnd.github.v3+json"
+
+    # Determine default branch
+    default_branch = "main"
+    try:
+        r_repo = requests.get(f"https://api.github.com/repos/{repo}", headers=headers, timeout=6)
+        if r_repo.status_code == 200:
+            default_branch = r_repo.json().get("default_branch", "main")
+    except Exception:
+        pass
+
+    # 1. Fetch assets from GitHub Releases (Best for packs & large files)
+    try:
+        url = f"https://api.github.com/repos/{repo}/releases"
+        resp = requests.get(url, headers=headers, timeout=8)
+        if resp.status_code == 200:
+            for rel in resp.json():
+                rel_name = rel.get("name") or rel.get("tag_name") or "Релиз"
+                rel_body = (rel.get("body") or "").strip()
+                assets = rel.get("assets", [])
+
+                zip_assets = []
+                img_assets = []
+                for asset in assets:
+                    aname = asset.get("name", "")
+                    aname_low = aname.lower()
+                    if (aname_low.endswith(".zip") or aname_low.endswith(".jar")) and not aname_low.endswith(".exe"):
+                        zip_assets.append(asset)
+                    elif any(aname_low.endswith(ext) for ext in [".png", ".jpg", ".jpeg", ".webp"]):
+                        img_assets.append(asset)
+
+                for z_asset in zip_assets:
+                    z_name = z_asset.get("name", "")
+                    dl_url = z_asset.get("browser_download_url", "")
+                    if dl_url in seen_urls:
+                        continue
+                    seen_urls.add(dl_url)
+
+                    z_stem = posixpath.splitext(z_name)[0].lower()
+                    selected_img = None
+
+                    # Priority 1: Exact 1.png, 1.jpg, 1.jpeg
+                    for img in img_assets:
+                        if img.get("name", "").lower() in ["1.png", "1.jpg", "1.jpeg", "1.webp"]:
+                            selected_img = img
+                            break
+                    # Priority 2: Starts with 1.
+                    if not selected_img:
+                        for img in img_assets:
+                            if img.get("name", "").lower().startswith("1."):
+                                selected_img = img
+                                break
+                    # Priority 3: Matching pack name
+                    if not selected_img:
+                        for img in img_assets:
+                            if posixpath.splitext(img.get("name", ""))[0].lower() == z_stem:
+                                selected_img = img
+                                break
+                    # Priority 4: Any other image
+                    if not selected_img and img_assets:
+                        selected_img = img_assets[0]
+
+                    img_url = selected_img.get("browser_download_url", "") if selected_img else ""
+                    size_b = z_asset.get("size", 0)
+                    size_mb = f"{size_b / (1024*1024):.1f} MB" if size_b else ""
+                    desc_text = rel_body if rel_body else f"Ресурс-пак из релиза «{rel_name}» на GitHub"
+
+                    cands = [
+                        f"https://raw.githubusercontent.com/{repo}/{default_branch}/packs/{z_stem}/1.png",
+                        f"https://raw.githubusercontent.com/{repo}/{default_branch}/packs/{z_stem}/1.jpg",
+                        f"https://raw.githubusercontent.com/{repo}/{default_branch}/1.png",
+                        f"https://raw.githubusercontent.com/{repo}/{default_branch}/1.jpg"
+                    ]
+
+                    packs.append({
+                        "name": z_name,
+                        "size": size_mb,
+                        "source": f"🏷️ Релиз: {rel_name}",
+                        "url": dl_url,
+                        "image_url": img_url,
+                        "candidate_img_urls": cands,
+                        "desc": desc_text
+                    })
+    except Exception as e:
+        print(f"[github releases] {e}")
+
+    # 2. Fetch via Git Trees API (Scans repository folders and pairs pack with 1.png / 1.jpg)
+    try:
+        branches_to_try = [default_branch]
+        if "main" not in branches_to_try: branches_to_try.append("main")
+        if "master" not in branches_to_try: branches_to_try.append("master")
+
+        for br in branches_to_try:
+            tree_url = f"https://api.github.com/repos/{repo}/git/trees/{br}?recursive=1"
+            resp = requests.get(tree_url, headers=headers, timeout=8)
+            if resp.status_code != 200:
+                continue
+
+            tree_data = resp.json()
+            items = tree_data.get("tree", [])
+
+            folder_files = {}
+            for it in items:
+                if it.get("type") != "blob":
+                    continue
+                p = it.get("path", "")
+                folder = posixpath.dirname(p)
+                fname = posixpath.basename(p)
+                folder_files.setdefault(folder, []).append({
+                    "path": p,
+                    "name": fname,
+                    "size": it.get("size", 0)
+                })
+
+            for folder, files in folder_files.items():
+                zips = [f for f in files if (f["name"].lower().endswith(".zip") or f["name"].lower().endswith(".jar")) and not f["name"].lower().endswith(".exe")]
+                if not zips:
+                    continue
+
+                img_candidates = [f for f in files if any(f["name"].lower().endswith(ext) for ext in [".png", ".jpg", ".jpeg", ".webp"])]
+
+                for z in zips:
+                    raw_zip_url = f"https://raw.githubusercontent.com/{repo}/{br}/{z['path']}"
+                    if raw_zip_url in seen_urls:
+                        continue
+                    seen_urls.add(raw_zip_url)
+
+                    z_stem = posixpath.splitext(z["name"])[0].lower()
+                    selected_img = None
+
+                    for cand in img_candidates:
+                        if cand["name"].lower() in ["1.png", "1.jpg", "1.jpeg", "1.webp"]:
+                            selected_img = cand
+                            break
+                    if not selected_img:
+                        for cand in img_candidates:
+                            if cand["name"].lower().startswith("1."):
+                                selected_img = cand
+                                break
+                    if not selected_img:
+                        for cand in img_candidates:
+                            if posixpath.splitext(cand["name"])[0].lower() == z_stem:
+                                selected_img = cand
+                                break
+                    if not selected_img and img_candidates:
+                        selected_img = img_candidates[0]
+
+                    raw_img_url = f"https://raw.githubusercontent.com/{repo}/{br}/{selected_img['path']}" if selected_img else ""
+
+                    if not raw_img_url:
+                        root_cands = [f for f in folder_files.get("", []) if f["name"].lower() in ["1.png", "1.jpg", "1.jpeg"]]
+                        if root_cands:
+                            raw_img_url = f"https://raw.githubusercontent.com/{repo}/{br}/{root_cands[0]['path']}"
+
+                    size_b = z.get("size", 0)
+                    size_mb = f"{size_b / (1024*1024):.1f} MB" if size_b else ""
+                    folder_display = folder if folder else "корень"
+
+                    packs.append({
+                        "name": z["name"],
+                        "size": size_mb,
+                        "source": f"📁 Папка: {folder_display}",
+                        "url": raw_zip_url,
+                        "image_url": raw_img_url,
+                        "candidate_img_urls": [],
+                        "desc": f"Файл из папки «{folder_display}» в репозитории GitHub"
+                    })
+            break
+    except Exception as e:
+        print(f"[github trees] {e}")
+
+    # 3. Fetch from packs.json in repository (if present)
+    try:
+        for br in [default_branch, "main", "master"]:
+            raw_json_url = f"https://raw.githubusercontent.com/{repo}/{br}/packs.json"
+            resp = requests.get(raw_json_url, headers=HEADERS, timeout=5)
+            if resp.status_code == 200:
+                for p in resp.json():
+                    u = p.get("url", "")
+                    if u and u not in seen_urls:
+                        seen_urls.add(u)
+                        img = p.get("image", "") or p.get("preview", "") or p.get("thumb", "")
+                        if img and not img.startswith("http"):
+                            img = f"https://raw.githubusercontent.com/{repo}/{br}/{img.lstrip('/')}"
+                        if not img:
+                            img = f"https://raw.githubusercontent.com/{repo}/{br}/1.png"
+                        packs.append({
+                            "name": p.get("name", "Ресурспак"),
+                            "size": p.get("size", ""),
+                            "source": "📋 packs.json",
+                            "url": u,
+                            "image_url": img,
+                            "candidate_img_urls": [],
+                            "desc": p.get("desc", "")
+                        })
+                break
+    except Exception:
+        pass
+
+    return packs
+
+# ── Tab 2: GitHub Repository Packs ────────────────────────────────────────────
+class GitHubTab(tk.Frame):
+    def __init__(self, parent, mc_path_var, status_fn):
+        super().__init__(parent, bg=BG)
+        self.mc_path_var = mc_path_var
+        self.set_status = status_fn
+
+        # Load saved repo from config file
+        repo_file = Path.home() / ".mctexturereplacer_repo.txt"
+        saved_repo = DEFAULT_GITHUB_REPO
+        if repo_file.exists():
+            try:
+                saved_repo = repo_file.read_text(encoding="utf-8").strip() or DEFAULT_GITHUB_REPO
+            except Exception:
+                pass
+        self.repo_var = tk.StringVar(value=saved_repo)
+
+        self._is_downloading = False
+        self._all_packs = []
+        self._selected_pack = None
+        self._preview_id = 0
+        self._current_screenshot_ph = None
+        self._full_screenshot_pil = None
+
+        self._fallback_presets = [
+            {
+                "name": "Faithful 32x (HD Ванилла)",
+                "size": "28.5 MB",
+                "source": "GitHub / Популярный",
+                "url": "https://github.com/Faithful-Resource-Pack/Faithful-32x/releases/download/v1.20.4/Faithful-32x-1.20.4.zip",
+                "image_url": "https://raw.githubusercontent.com/Faithful-Resource-Pack/Faithful-32x/master/pack.png",
+                "desc": "Улучшенные классические текстуры в 32x32 разрешении (полная совместимость со всеми версиями)."
+            },
+            {
+                "name": "Bare Bones (Стиль трейлеров)",
+                "size": "7.8 MB",
+                "source": "GitHub / Популярный",
+                "url": "https://github.com/RobotPantaloons/Bare-Bones/releases/download/v1.20.4/Bare_Bones_1.20.4.zip",
+                "image_url": "https://raw.githubusercontent.com/RobotPantaloons/Bare-Bones/master/pack.png",
+                "desc": "Яркий мультяшный стиль официальных трейлеров Minecraft от Mojang."
+            },
+            {
+                "name": "Fresh Animations (Живые анимации)",
+                "size": "2.4 MB",
+                "source": "GitHub / Популярный",
+                "url": "https://github.com/FreshLX-nexus/Fresh-Animations/releases/download/v1.9.1/FreshAnimations_v1.9.1.zip",
+                "image_url": "https://raw.githubusercontent.com/FreshLX-nexus/Fresh-Animations/main/pack.png",
+                "desc": "Динамические живые анимации глаз, походки и эмоций всех мобов."
+            }
+        ]
+        self._build()
+        self.after(300, self._load_packs)
+
+    def _create_placeholder(self, title, subtitle=""):
+        w, h = 360, 200
+        img = Image.new("RGBA", (w, h), (36, 38, 56, 255))
+        draw = ImageDraw.Draw(img)
+        draw.rectangle([0, 0, w - 1, h - 1], outline=(69, 71, 90, 255), width=1)
+        try:
+            draw.text((w // 2, h // 2 - 12), title, fill=(166, 173, 200, 255), anchor="mm")
+            if subtitle:
+                draw.text((w // 2, h // 2 + 14), subtitle, fill=(108, 112, 134, 255), anchor="mm")
+        except Exception:
+            draw.text((20, h // 2 - 12), title, fill=(166, 173, 200, 255))
+            if subtitle:
+                draw.text((20, h // 2 + 14), subtitle, fill=(108, 112, 134, 255))
+        return ImageTk.PhotoImage(img)
+
+    def _build(self):
+        # Pre-generate placeholders
+        self._ph_select = self._create_placeholder("Выберите текстур-пак в таблице слева", "Здесь появится скриншот 1.png")
+        self._ph_loading = self._create_placeholder("⏳ Загрузка скриншота...", "Поиск 1.png / 1.jpg на GitHub")
+        self._ph_noimg = self._create_placeholder("📷 Скриншот 1.png не найден", "Положите 1.png или 1.jpg рядом с файлом на GitHub")
+
+        # 1. Header Banner
+        hdr = tk.Frame(self, bg=SURFACE, padx=16, pady=10)
+        hdr.pack(fill="x", padx=14, pady=(10, 8))
+
+        tk.Label(
+            hdr, text="📦 Текстур-паки из вашего GitHub репозитория",
+            bg=SURFACE, fg=ACCENT, font=("Segoe UI", 13, "bold")
+        ).pack(anchor="w")
+
+        tk.Label(
+            hdr,
+            text="Приложение автоматически ищет .zip архивы и скриншоты 1.png / 1.jpg рядом с ними.\n"
+                 "При выборе любого пака в списке сразу отображается его скриншот и кнопка быстрой установки!",
+            bg=SURFACE, fg=TEXT, font=("Segoe UI", 9), justify="left"
+        ).pack(anchor="w", pady=(3, 0))
+
+        # 2. Repository & Action Toolbar
+        bar = tk.Frame(self, bg=SURFACE, padx=14, pady=8, highlightthickness=1, highlightbackground="#45475a")
+        bar.pack(fill="x", padx=14, pady=(0, 8))
+
+        tk.Label(bar, text="Репозиторий:", bg=SURFACE, fg=SUBTEXT, font=("Segoe UI", 9, "bold")).pack(side="left")
+        self.entry_repo = tk.Entry(bar, textvariable=self.repo_var, width=32, bg=BG, fg=TEXT, insertbackground=TEXT, font=("Consolas", 9), relief="flat")
+        self.entry_repo.pack(side="left", padx=(6, 10))
+
+        btn_refresh = tk.Button(
+            bar, text="🔄 Обновить список с GitHub", bg=ACCENT, fg="#1e1e2e", activebackground="#b4befe",
+            font=("Segoe UI", 9, "bold"), relief="flat", padx=12, pady=4, cursor="hand2", command=self._load_packs
+        )
+        btn_refresh.pack(side="left", padx=(0, 6))
+
+        btn_open_gh = tk.Button(
+            bar, text="🌐 Открыть репозиторий", bg="#45475a", fg=TEXT, activebackground="#585b70",
+            font=("Segoe UI", 9), relief="flat", padx=10, pady=4, cursor="hand2", command=self._open_github_repo
+        )
+        btn_open_gh.pack(side="left", padx=(0, 6))
+
+        btn_rel_gh = tk.Button(
+            bar, text="🏷️ Создать релиз", bg="#45475a", fg=TEXT, activebackground="#585b70",
+            font=("Segoe UI", 9), relief="flat", padx=10, pady=4, cursor="hand2", command=self._open_github_new_release
+        )
+        btn_rel_gh.pack(side="left", padx=(0, 6))
+
+        btn_local = tk.Button(
+            bar, text="📥 Установить свой .ZIP с ПК", bg=SUCCESS, fg="#1e1e2e", activebackground="#94e2d5",
+            font=("Segoe UI", 9, "bold"), relief="flat", padx=12, pady=4, cursor="hand2", command=self._install_local_zip
+        )
+        btn_local.pack(side="right")
+
+        # 3. Main Workspace: Split into Left: Table, Right: Screenshot Preview Card
+        paned = tk.PanedWindow(self, orient="horizontal", bg=BG, sashwidth=6, sashrelief="flat")
+        paned.pack(fill="both", expand=True, padx=14, pady=(0, 6))
+
+        # Left Frame: Treeview Table
+        left_frame = ttk.LabelFrame(paned, text=" Список текстур-паков на GitHub ")
+        paned.add(left_frame, minsize=380, width=540)
+
+        cols = ("name", "size", "source")
+        self.pack_tree = ttk.Treeview(left_frame, columns=cols, show="headings", height=10)
+        self.pack_tree.heading("name", text="Название архива")
+        self.pack_tree.heading("size", text="Размер")
+        self.pack_tree.heading("source", text="Раздел / Папка")
+
+        self.pack_tree.column("name", width=250, anchor="w")
+        self.pack_tree.column("size", width=85, anchor="center")
+        self.pack_tree.column("source", width=180, anchor="w")
+
+        sb = ttk.Scrollbar(left_frame, command=self.pack_tree.yview)
+        self.pack_tree.configure(yscrollcommand=sb.set)
+        self.pack_tree.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
+
+        self.pack_tree.bind("<<TreeviewSelect>>", self._on_pack_select)
+        self.pack_tree.bind("<ButtonRelease-1>", self._on_pack_select)
+        self.pack_tree.bind("<Double-1>", lambda e: self._download_selected())
+
+        # Right Frame: Preview Card
+        right_frame = ttk.LabelFrame(paned, text=" Предпросмотр и скриншот (1.png / 1.jpg) ")
+        paned.add(right_frame, minsize=420)
+
+        card_inner = tk.Frame(right_frame, bg=SURFACE, padx=14, pady=10)
+        card_inner.pack(fill="both", expand=True)
+
+        self.card_title = tk.Label(
+            card_inner, text="Выберите текстур-пак слева", bg=SURFACE, fg=ACCENT,
+            font=("Segoe UI", 12, "bold"), wraplength=400, justify="left"
+        )
+        self.card_title.pack(anchor="w")
+
+        self.card_meta = tk.Label(
+            card_inner, text="Размер: --  •  Источник: --", bg=SURFACE, fg=SUBTEXT,
+            font=("Segoe UI", 9)
+        )
+        self.card_meta.pack(anchor="w", pady=(2, 8))
+
+        # Screenshot display box (360x200)
+        img_box = tk.Frame(card_inner, width=360, height=200, bg="#242638", highlightthickness=1, highlightbackground="#45475a")
+        img_box.pack_propagate(False)
+        img_box.pack(pady=(0, 4))
+
+        self.card_img_lbl = tk.Label(img_box, bg="#242638", image=self._ph_select, cursor="hand2")
+        self.card_img_lbl.pack(fill="both", expand=True)
+        self.card_img_lbl.bind("<Button-1>", lambda e: self._on_screenshot_click())
+        img_box.bind("<Button-1>", lambda e: self._on_screenshot_click())
+
+        self.card_hint_lbl = tk.Label(
+            card_inner, text="Кликните на скриншот, чтобы увеличить его", bg=SURFACE, fg=SUBTEXT,
+            font=("Segoe UI", 8)
+        )
+        self.card_hint_lbl.pack(pady=(0, 6))
+
+        # Description text
+        desc_box = tk.Frame(card_inner, bg=SURFACE)
+        desc_box.pack(fill="x", pady=(0, 8))
+        self.card_desc = tk.Text(
+            desc_box, height=3, bg=BG, fg=TEXT, font=("Segoe UI", 9),
+            relief="flat", wrap="word", state="disabled", padx=8, pady=6
+        )
+        self.card_desc.pack(fill="x")
+
+        # Action buttons
+        btn_row = tk.Frame(card_inner, bg=SURFACE)
+        btn_row.pack(fill="x", pady=(4, 0))
+
+        self.btn_download = tk.Button(
+            btn_row, text="⚡ Скачать и установить в Minecraft",
+            bg=SUCCESS, fg="#1e1e2e", activebackground="#94e2d5",
+            font=("Segoe UI", 10, "bold"), relief="flat", padx=14, pady=6, cursor="hand2",
+            state="disabled", command=self._download_selected
+        )
+        self.btn_download.pack(side="left", fill="x", expand=True, padx=(0, 6))
+
+        self.btn_download_other = tk.Button(
+            btn_row, text="📁 В другую папку...", bg="#45475a", fg=TEXT, activebackground="#585b70",
+            font=("Segoe UI", 9), relief="flat", padx=10, pady=6, cursor="hand2",
+            state="disabled", command=self._download_selected_other
+        )
+        self.btn_download_other.pack(side="left")
+
+        # 4. Progress Card
+        self.prog_card = tk.Frame(self, bg=SURFACE, padx=16, pady=6)
+        self.prog_card.pack(fill="x", padx=14, pady=(0, 6))
+
+        self.prog_var = tk.DoubleVar()
+        self.prog_bar = ttk.Progressbar(self.prog_card, variable=self.prog_var, maximum=100)
+        self.prog_bar.pack(fill="x", pady=(0, 2))
+
+        self.prog_lbl = tk.Label(self.prog_card, text="Выберите пак в таблице и нажмите кнопку установки.", bg=SURFACE, fg=SUBTEXT, font=("Segoe UI", 9))
+        self.prog_lbl.pack(anchor="w")
+
+        # 5. Instructions Box
+        inst = tk.Frame(self, bg="#242638", padx=14, pady=8, highlightthickness=1, highlightbackground="#45475a")
+        inst.pack(fill="x", padx=14, pady=(0, 8))
+        tk.Label(
+            inst,
+            text="💡 Как закинуть паки и скриншоты в свой репозиторий на GitHub:\n"
+                 "• Вариант 1 (через Релизы — рекомендуется): Нажмите «🏷️ Создать релиз», прикрепите ВашПак.zip и рядом скриншот 1.png (или 1.jpg).\n"
+                 "• Вариант 2 (через папки): Создайте в репозитории папку packs/ИмяПака/, положите туда .zip и рядом 1.png (или 1.jpg).\n"
+                 "После этого нажмите «🔄 Обновить список» — пак сразу появится с картинкой и кнопкой установки в 1 клик!",
+            bg="#242638", fg=TEXT, font=("Segoe UI", 9), justify="left"
+        ).pack(anchor="w")
+
+    def _open_github_repo(self):
+        repo = self.repo_var.get().strip() or DEFAULT_GITHUB_REPO
+        webbrowser.open(f"https://github.com/{repo}")
+
+    def _open_github_new_release(self):
+        repo = self.repo_var.get().strip() or DEFAULT_GITHUB_REPO
+        webbrowser.open(f"https://github.com/{repo}/releases/new")
+
+    def _load_packs(self):
+        repo = self.repo_var.get().strip() or DEFAULT_GITHUB_REPO
+        try:
+            (Path.home() / ".mctexturereplacer_repo.txt").write_text(repo, encoding="utf-8")
+        except Exception:
+            pass
+        self.set_status("Загрузка списка паков с GitHub...")
+        self.prog_lbl.config(text=f"Поиск текстур-паков и скриншотов в репозитории {repo}...")
+        threading.Thread(target=self._bg_load_packs, daemon=True).start()
+
+    def _bg_load_packs(self):
+        repo = self.repo_var.get().strip() or DEFAULT_GITHUB_REPO
+        packs = fetch_github_packs(repo)
+        is_preset = False
+        if not packs:
+            packs = list(self._fallback_presets)
+            is_preset = True
+        self._all_packs = packs
+        self.after(0, lambda: self._render_table(is_preset))
+
+    def _render_table(self, is_preset=False):
+        self.pack_tree.delete(*self.pack_tree.get_children())
+        for i, p in enumerate(self._all_packs):
+            self.pack_tree.insert(
+                "", "end", iid=str(i),
+                values=(p.get("name", ""), p.get("size", "--"), p.get("source", "GitHub"))
+            )
+        msg = f"Загружено {len(self._all_packs)} паков с GitHub"
+        if is_preset:
+            msg += " (показаны примеры, пока репозиторий пуст)"
+        self.set_status(msg)
+        self.prog_lbl.config(text=f"Готово: найдено {len(self._all_packs)} текстур-паков. Выберите пак для просмотра скриншота.")
+        # Auto-select first item
+        if self._all_packs:
+            self.pack_tree.selection_set("0")
+            self.pack_tree.focus("0")
+            self._on_pack_select()
+
+    def _on_pack_select(self, event=None):
+        sel = self.pack_tree.selection()
+        if not sel:
+            return
+        idx = int(sel[0])
+        if idx >= len(self._all_packs):
+            return
+        pack = self._all_packs[idx]
+        self._selected_pack = pack
+
+        self._preview_id += 1
+        req_id = self._preview_id
+
+        # Update card UI
+        self.card_title.config(text=pack.get("name", "Ресурспак"))
+        self.card_meta.config(text=f"📦 Размер: {pack.get('size', '--')}  •  Раздел: {pack.get('source', '')}")
+
+        self.card_desc.configure(state="normal")
+        self.card_desc.delete("1.0", "end")
+        self.card_desc.insert("1.0", pack.get("desc", ""))
+        self.card_desc.configure(state="disabled")
+
+        self.btn_download.config(state="normal", text="⚡ Скачать и установить в Minecraft")
+        self.btn_download_other.config(state="normal")
+
+        # Show loading placeholder
+        self.card_img_lbl.config(image=self._ph_loading)
+        self.card_hint_lbl.config(text="⏳ Загрузка скриншота...")
+        self._full_screenshot_pil = None
+
+        threading.Thread(target=self._bg_load_screenshot, args=(pack, req_id), daemon=True).start()
+
+    def _bg_load_screenshot(self, pack, req_id):
+        img = None
+        img_url = pack.get("image_url", "")
+        if img_url:
+            img = fetch_image_pil(img_url)
+
+        # If not found yet, try candidate URLs (1.png, 1.jpg in possible paths)
+        if not img and pack.get("candidate_img_urls"):
+            for cand_url in pack.get("candidate_img_urls", []):
+                img = fetch_image_pil(cand_url)
+                if img:
+                    pack["image_url"] = cand_url
+                    break
+
+        if req_id != self._preview_id:
+            return
+
+        self.after(0, lambda: self._apply_screenshot(img, pack, req_id))
+
+    def _apply_screenshot(self, img, pack, req_id):
+        if req_id != self._preview_id:
+            return
+
+        if img:
+            max_w, max_h = 360, 200
+            img_ratio = img.width / max(1, img.height)
+            box_ratio = max_w / max_h
+            if img_ratio > box_ratio:
+                new_w = max_w
+                new_h = max(1, int(max_w / img_ratio))
+            else:
+                new_h = max_h
+                new_w = max(1, int(max_h * img_ratio))
+            resized = img.resize((new_w, new_h), Image.LANCZOS)
+
+            bg_card = Image.new("RGBA", (max_w, max_h), (36, 38, 56, 255))
+            offset_x = (max_w - new_w) // 2
+            offset_y = (max_h - new_h) // 2
+            bg_card.paste(resized, (offset_x, offset_y), resized if resized.mode == "RGBA" else None)
+
+            ph = ImageTk.PhotoImage(bg_card)
+            self._current_screenshot_ph = ph
+            self.card_img_lbl.config(image=ph)
+            self.card_hint_lbl.config(text="🔍 Кликните по скриншоту, чтобы открыть в полном размере")
+            self._full_screenshot_pil = img
+        else:
+            self.card_img_lbl.config(image=self._ph_noimg)
+            self.card_hint_lbl.config(text="📷 Скриншот 1.png / 1.jpg не найден для этого пака")
+            self._full_screenshot_pil = None
+
+    def _on_screenshot_click(self):
+        if not self._full_screenshot_pil:
+            return
+        def save_and_open():
+            try:
+                with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+                    tmp = f.name
+                self._full_screenshot_pil.save(tmp, "PNG")
+                os.startfile(tmp)
+            except Exception:
+                pass
+        threading.Thread(target=save_and_open, daemon=True).start()
+
+    def _download_selected(self):
+        sel = self.pack_tree.selection()
+        if not sel:
+            messagebox.showinfo("Выбор", "Выберите текстур-пак в таблице!")
+            return
+        idx = int(sel[0])
+        pack = self._all_packs[idx]
+        mc = Path(self.mc_path_var.get())
+        if not mc.exists():
+            messagebox.showerror("Ошибка", f"Папка .minecraft не найдена:\n{mc}")
+            return
+        rp = mc / "resourcepacks"
+        rp.mkdir(parents=True, exist_ok=True)
+        self._start_download(pack, rp, is_mc=True)
+
+    def _download_selected_other(self):
+        sel = self.pack_tree.selection()
+        if not sel:
+            messagebox.showinfo("Выбор", "Выберите текстур-пак в таблице!")
+            return
+        idx = int(sel[0])
+        pack = self._all_packs[idx]
+        d = filedialog.askdirectory(title="Выберите папку для сохранения")
+        if not d: return
+        self._start_download(pack, Path(d), is_mc=False)
+
+    def _start_download(self, pack, dest_dir, is_mc=True):
+        if self._is_downloading:
+            messagebox.showinfo("Загрузка", "Уже идет скачивание файла. Дождитесь завершения.")
+            return
+        self._is_downloading = True
+        self.prog_var.set(0)
+        pname = pack.get("name", "пака")
+        self.prog_lbl.config(text=f"Скачивание {pname} с GitHub...")
+        self.set_status(f"Скачивание: {pname}...")
+
+        def worker():
+            def prog_cb(done, total):
+                if total > 0:
+                    pct = done / total * 100
+                    mb_done = done / (1024 * 1024)
+                    mb_tot  = total / (1024 * 1024)
+                    self.after(0, lambda: (
+                        self.prog_var.set(pct),
+                        self.prog_lbl.config(text=f"Скачивание: {mb_done:.1f} MB / {mb_tot:.1f} MB ({pct:.0f}%) — {pname}")
+                    ))
+                else:
+                    mb_done = done / (1024 * 1024)
+                    self.after(0, lambda: (
+                        self.prog_var.set(50),
+                        self.prog_lbl.config(text=f"Скачано: {mb_done:.1f} MB...")
+                    ))
+            try:
+                url = pack.get("url", "")
+                saved = download_universal_pack(url, dest_dir, prog_cb)
+                self.after(0, lambda: self._on_download_success(saved, is_mc))
+            except Exception as e:
+                self.after(0, lambda: self._on_download_error(str(e), pack.get("url", "")))
+            finally:
+                self._is_downloading = False
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_download_success(self, saved_path, is_mc):
+        self.prog_var.set(100)
+        self.prog_lbl.config(text=f"✅ Успешно скачано и установлено: {saved_path.name}")
+        self.set_status(f"Установлено: {saved_path.name}")
+        if is_mc:
+            messagebox.showinfo(
+                "Готово! Текстурпак установлен",
+                f"Ресурспак «{saved_path.name}» успешно скачан с GitHub и установлен в Minecraft!\n\n"
+                f"Как включить в игре:\n"
+                f"1. Откройте Minecraft ➔ Настройки ➔ Наборы ресурсов (Resource Packs)\n"
+                f"2. Переместите «{saved_path.name}» стрелочкой вправо ➔ «Готово»!\n\n"
+                f"(Если игра уже запущена, нажмите F3 + T для мгновенной перезагрузки)"
+            )
+        else:
+            messagebox.showinfo("Готово!", f"Файл сохранен в:\n{saved_path}")
+
+    def _on_download_error(self, err_msg, url):
+        self.prog_var.set(0)
+        self.prog_lbl.config(text=f"❌ Ошибка скачивания: {err_msg}")
+        self.set_status("Ошибка скачивания", err=True)
+        ans = messagebox.askyesno(
+            "Ошибка скачивания",
+            f"Не удалось скачать файл автоматически с GitHub:\n{err_msg}\n\n"
+            f"Открыть ссылку в браузере, чтобы скачать вручную?\n"
+            f"(После скачивания нажмите кнопку «Установить свой .ZIP с ПК»)"
+        )
+        if ans:
+            webbrowser.open(url)
+
+    def _install_local_zip(self):
+        path = filedialog.askopenfilename(
+            title="Выберите архив с текстурпаком (.zip)",
+            filetypes=[("ZIP архивы", "*.zip *.jar"), ("Все файлы", "*.*")]
+        )
+        if not path: return
+        mc = Path(self.mc_path_var.get())
+        if not mc.exists():
+            messagebox.showerror("Ошибка", f"Папка .minecraft не найдена:\n{mc}")
+            return
+        rp = mc / "resourcepacks"
+        rp.mkdir(parents=True, exist_ok=True)
+        dest = rp / Path(path).name
+        try:
+            shutil.copy2(path, dest)
+            self.set_status(f"Установлено: {dest.name}")
+            messagebox.showinfo(
+                "Готово! Текстурпак установлен",
+                f"Файл «{dest.name}» успешно скопирован в папку resourcepacks!\n\n"
+                f"Как включить в игре:\n"
+                f"1. Откройте Minecraft ➔ Настройки ➔ Наборы ресурсов (Resource Packs)\n"
+                f"2. Переместите «{dest.name}» стрелочкой вправо ➔ «Готово»!\n\n"
+                f"(Если игра уже запущена, нажмите F3 + T для мгновенной перезагрузки)"
+            )
+        except Exception as e:
+            messagebox.showerror("Ошибка копирования", str(e))
 
 # ── Main Application Window ───────────────────────────────────────────────────
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Minecraft Texture Replacer v2.7")
+        self.title("Minecraft Texture Replacer v3.0")
         self.geometry("1250x820")
         self.minsize(1050, 680)
         self.configure(bg=BG)
@@ -1132,9 +1991,12 @@ class App(tk.Tk):
         nb.pack(fill="both", expand=True)
 
         self.tex_tab    = TextureTab(nb, self.mc_path_var, self._set_status)
+        self.github_tab = GitHubTab(nb, self.mc_path_var, self._set_status)
         self.browse_tab = BrowseTab(nb, self.mc_path_var, self._set_status)
+
         nb.add(self.tex_tab,    text="  ✏️ Заменить на свои фото  ")
-        nb.add(self.browse_tab, text="  🌐 Каталог текстур (Minecraft-Inside + MinecraftExpert)  ")
+        nb.add(self.github_tab, text="  📦 Текстур-паки из GitHub  ")
+        nb.add(self.browse_tab, text="  🌐 Каталог сайтов (Minecraft-Inside + MinecraftExpert)  ")
 
         # Load first page
         self.after(300, lambda: self.browse_tab._load_page(1))
