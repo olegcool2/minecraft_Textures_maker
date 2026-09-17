@@ -3,7 +3,6 @@ Minecraft Texture Replacer v3.0
 =================================
 Tab 1 - Replace textures with your own photos (Totem, Grass, etc.)
 Tab 2 - Download texture packs from GitHub with 1.png / 1.jpg screenshot preview
-Tab 3 - Browse texture packs from Minecraft-Inside.ru & MinecraftExpert.ru
 """
 
 import sys, subprocess, importlib
@@ -868,400 +867,7 @@ class TextureTab(tk.Frame):
             f"(Если игра уже запущена, нажмите сочетание F3 + T для мгновенной перезагрузки текстур)"
         )
 
-# ── Tab 2: Browse Packs (Minecraft-Inside.ru & MinecraftExpert.ru) ────────────
-class BrowseTab(tk.Frame):
-    def __init__(self, parent, mc_path_var, status_fn):
-        super().__init__(parent, bg=BG)
-        self.mc_path_var = mc_path_var
-        self.set_status = status_fn
-        self._packs = []
-        self._gallery_phs = []
-        self._card_images = []
-        self._current_page = 1
-        self._build()
-
-    def _build(self):
-        top = tk.Frame(self, bg=BG, pady=6)
-        top.pack(fill="x", padx=14)
-
-        # Site selection
-        tk.Label(top, text="Сайт:", bg=BG, fg=ACCENT, font=("Segoe UI", 9, "bold")).pack(side="left")
-        self.site_var = tk.StringVar(value="Minecraft-Inside.ru")
-        self.site_cb = ttk.Combobox(top, textvariable=self.site_var,
-                                    values=["Minecraft-Inside.ru", "MinecraftExpert.ru"],
-                                    state="readonly", width=20)
-        self.site_cb.pack(side="left", padx=6)
-        self.site_cb.bind("<<ComboboxSelected>>", self._on_site_change)
-
-        # Category
-        tk.Label(top, text="Категория:", bg=BG, fg=SUBTEXT, font=("Segoe UI", 9)).pack(side="left", padx=(6, 0))
-        self.cat_var = tk.StringVar(value="Все текстуры")
-        self.cat_cb = ttk.Combobox(top, textvariable=self.cat_var, values=list(INSIDE_CATEGORIES.keys()), state="readonly", width=18)
-        self.cat_cb.pack(side="left", padx=4)
-        self.cat_cb.bind("<<ComboboxSelected>>", lambda e: self._load_page(1))
-
-        # Search
-        tk.Label(top, text="Поиск:", bg=BG, fg=SUBTEXT, font=("Segoe UI", 9)).pack(side="left", padx=(8, 0))
-        self.search_site = tk.StringVar()
-        s_ent = tk.Entry(top, textvariable=self.search_site, width=20, bg=SURFACE, fg=TEXT, insertbackground=TEXT, relief="flat")
-        s_ent.pack(side="left", padx=4)
-        s_ent.bind("<Return>", lambda e: self._do_search())
-        ttk.Button(top, text="Искать", command=self._do_search).pack(side="left", padx=3)
-        ttk.Button(top, text="Обновить", command=lambda: self._load_page(1)).pack(side="left", padx=2)
-
-        # Pagination
-        pag = tk.Frame(top, bg=BG)
-        pag.pack(side="right")
-        ttk.Button(pag, text="◀ Назад", command=lambda: self._load_page(self._current_page - 1)).pack(side="left", padx=2)
-        self.page_lbl = tk.Label(pag, text="Стр. 1", bg=BG, fg=SUBTEXT, font=("Segoe UI", 9, "bold"))
-        self.page_lbl.pack(side="left", padx=6)
-        ttk.Button(pag, text="Вперед ▶", command=lambda: self._load_page(self._current_page + 1)).pack(side="left", padx=2)
-
-        paned = tk.PanedWindow(self, orient="horizontal", bg=BG, sashwidth=6, sashrelief="flat")
-        paned.pack(fill="both", expand=True, padx=12, pady=(0, 6))
-
-        left = tk.Frame(paned, bg=BG)
-        paned.add(left, minsize=480)
-        self._build_grid(left)
-
-        right = tk.Frame(paned, bg=BG)
-        paned.add(right, minsize=360)
-        self._build_detail(right)
-
-    def _on_site_change(self, event=None):
-        site = self.site_var.get()
-        if "Expert" in site:
-            self.cat_cb["values"] = list(EXPERT_CATEGORIES.keys())
-            self.cat_var.set("Все текстуры")
-        else:
-            self.cat_cb["values"] = list(INSIDE_CATEGORIES.keys())
-            self.cat_var.set("Все текстуры")
-        self._load_page(1)
-
-    def _build_grid(self, parent):
-        self.grid_canvas = tk.Canvas(parent, bg=BG, highlightthickness=0)
-        vsb = ttk.Scrollbar(parent, orient="vertical", command=self.grid_canvas.yview)
-        self.grid_canvas.configure(yscrollcommand=vsb.set)
-        vsb.pack(side="right", fill="y")
-        self.grid_canvas.pack(side="left", fill="both", expand=True)
-
-        self.grid_frame = tk.Frame(self.grid_canvas, bg=BG)
-        self._grid_win = self.grid_canvas.create_window((0, 0), window=self.grid_frame, anchor="nw")
-
-        def on_f_configure(e):
-            self.grid_canvas.configure(scrollregion=self.grid_canvas.bbox("all"))
-        def on_c_configure(e):
-            if e.width > 50:
-                self.grid_canvas.itemconfig(self._grid_win, width=e.width)
-
-        self.grid_frame.bind("<Configure>", on_f_configure)
-        self.grid_canvas.bind("<Configure>", on_c_configure)
-        self.grid_canvas.bind_all("<MouseWheel>", lambda e: self.grid_canvas.yview_scroll(-1*(e.delta//120), "units"))
-
-    def _build_detail(self, parent):
-        self.detail_title = tk.Label(parent, text="👈 Нажмите на любой пак", bg=BG, fg=ACCENT, font=("Segoe UI", 12, "bold"), wraplength=340, justify="left")
-        self.detail_title.pack(anchor="w", padx=10, pady=(8, 4))
-
-        gal_outer = tk.Frame(parent, bg=SURFACE, height=180)
-        gal_outer.pack(fill="x", padx=10, pady=4)
-        gal_outer.pack_propagate(False)
-        self.gal_canvas = tk.Canvas(gal_outer, bg=SURFACE, height=160, highlightthickness=0)
-        gal_hsb = ttk.Scrollbar(gal_outer, orient="horizontal", command=self.gal_canvas.xview)
-        self.gal_canvas.configure(xscrollcommand=gal_hsb.set)
-        gal_hsb.pack(side="bottom", fill="x")
-        self.gal_canvas.pack(side="left", fill="both", expand=True)
-        self.gal_inner = tk.Frame(self.gal_canvas, bg=SURFACE)
-        self._gal_win = self.gal_canvas.create_window((0, 0), window=self.gal_inner, anchor="nw")
-        self.gal_inner.bind("<Configure>", lambda e: self.gal_canvas.configure(scrollregion=self.gal_canvas.bbox("all")))
-
-        self.detail_desc = tk.Text(parent, bg=SURFACE, fg=TEXT, relief="flat", font=("Segoe UI", 9), wrap="word", height=5, state="disabled")
-        self.detail_desc.pack(fill="x", padx=10, pady=4)
-
-        dl_lf = ttk.LabelFrame(parent, text=" Скачать версии ")
-        dl_lf.pack(fill="both", expand=True, padx=10, pady=4)
-
-        dl_canvas = tk.Canvas(dl_lf, bg=BG, highlightthickness=0, height=120)
-        dl_vsb = ttk.Scrollbar(dl_lf, orient="vertical", command=dl_canvas.yview)
-        dl_canvas.configure(yscrollcommand=dl_vsb.set)
-        dl_vsb.pack(side="right", fill="y")
-        dl_canvas.pack(side="left", fill="both", expand=True)
-        self.dl_frame = tk.Frame(dl_canvas, bg=BG)
-        dl_win = dl_canvas.create_window((0, 0), window=self.dl_frame, anchor="nw")
-        self.dl_frame.bind("<Configure>", lambda e: dl_canvas.configure(scrollregion=dl_canvas.bbox("all")))
-        dl_canvas.bind("<Configure>", lambda e: dl_canvas.itemconfig(dl_win, width=e.width))
-
-        self.prog_var = tk.DoubleVar()
-        self.prog_bar = ttk.Progressbar(parent, variable=self.prog_var, maximum=100)
-        self.prog_bar.pack(fill="x", padx=10, pady=(4, 2))
-        self.prog_lbl = tk.Label(parent, text="", bg=BG, fg=SUBTEXT, font=("Segoe UI", 8))
-        self.prog_lbl.pack()
-
-    def _load_page(self, page):
-        if page < 1: return
-        self._current_page = page
-        self.page_lbl.config(text=f"Стр. {page}")
-
-        for w in self.grid_frame.winfo_children():
-            w.destroy()
-        self._gallery_phs.clear()
-        self._card_images.clear()
-
-        is_expert = "Expert" in self.site_var.get()
-        if is_expert:
-            cat_url = EXPERT_CATEGORIES.get(self.cat_var.get(), f"{SITE_EXPERT_BASE}/textures/")
-            if page == 1:
-                url = cat_url
-            else:
-                base = cat_url.rstrip("/")
-                url  = f"{base}/page/{page}/"
-            self.set_status(f"Загрузка MinecraftExpert (стр. {page})...")
-            threading.Thread(target=self._bg_listing, args=(url, "expert"), daemon=True).start()
-        else:
-            cat_url = INSIDE_CATEGORIES.get(self.cat_var.get(), f"{SITE_INSIDE_BASE}/resource-packs/")
-            if page == 1:
-                url = cat_url
-            else:
-                base = cat_url.rstrip("/").split("?")[0]
-                qs   = ("?" + cat_url.split("?")[1]) if "?" in cat_url else ""
-                url  = f"{base}/page/{page}/{qs}"
-            self.set_status(f"Загрузка Minecraft-Inside (стр. {page})...")
-            threading.Thread(target=self._bg_listing, args=(url, "inside"), daemon=True).start()
-
-    def _do_search(self):
-        q = self.search_site.get().strip()
-        if not q:
-            self._load_page(1)
-            return
-        is_expert = "Expert" in self.site_var.get()
-        self._current_page = 1
-        self.page_lbl.config(text="Поиск")
-        self.set_status("Поиск...")
-        for w in self.grid_frame.winfo_children():
-            w.destroy()
-        if is_expert:
-            url = f"{SITE_EXPERT_BASE}/?s=" + urllib.parse.quote(q)
-            threading.Thread(target=self._bg_listing, args=(url, "expert"), daemon=True).start()
-        else:
-            url = f"{SITE_INSIDE_BASE}/search/?q=" + urllib.parse.quote(q) + "&type=resource-packs"
-            threading.Thread(target=self._bg_listing, args=(url, "inside"), daemon=True).start()
-
-    def _bg_listing(self, url, site):
-        if site == "expert":
-            packs = scrape_expert_listing(url)
-        else:
-            packs = scrape_inside_listing(url)
-        self._packs = packs
-        self.after(0, lambda: self._render_cards(packs))
-        self.after(0, lambda: self.set_status(f"Найдено {len(packs)} паков ({self.site_var.get()})"))
-
-    def _render_cards(self, packs):
-        for w in self.grid_frame.winfo_children():
-            w.destroy()
-        self._card_images.clear()
-
-        if not packs:
-            tk.Label(self.grid_frame, text="Ничего не найдено. Попробуйте другую категорию или поиск.",
-                     bg=BG, fg=SUBTEXT, font=("Segoe UI", 10)).pack(pady=40)
-            self.grid_frame.update_idletasks()
-            self.grid_canvas.configure(scrollregion=self.grid_canvas.bbox("all"))
-            return
-
-        COLS = 3
-        for i, pack in enumerate(packs):
-            row, col = divmod(i, COLS)
-            self._make_card(self.grid_frame, pack, row, col)
-
-        self.grid_frame.update_idletasks()
-        self.grid_canvas.configure(scrollregion=self.grid_canvas.bbox("all"))
-        self.grid_canvas.yview_moveto(0)
-
-    def _make_card(self, parent, pack, row, col):
-        card = tk.Frame(parent, bg=SURFACE, padx=6, pady=6, cursor="hand2")
-        card.grid(row=row, column=col, padx=6, pady=6, sticky="nsew")
-        parent.columnconfigure(col, weight=1)
-
-        img_lbl = tk.Label(card, bg="#2a2b3d", width=25, height=7)
-        img_lbl.pack()
-
-        if pack.get("thumb"):
-            threading.Thread(target=self._load_thumb, args=(pack["thumb"], img_lbl), daemon=True).start()
-
-        title = pack.get("title", "")
-        if len(title) > 36: title = title[:33] + "..."
-        tk.Label(card, text=title, bg=SURFACE, fg=TEXT, font=("Segoe UI", 9, "bold"), wraplength=180, justify="center").pack(pady=(4, 2))
-
-        for w in (card, img_lbl):
-            w.bind("<Button-1>", lambda e, p=pack: self._open_detail(p))
-
-        def on_enter(e, c=card):
-            c.configure(bg="#45475a")
-            for child in c.winfo_children():
-                try: child.configure(bg="#45475a")
-                except Exception: pass
-        def on_leave(e, c=card):
-            c.configure(bg=SURFACE)
-            for child in c.winfo_children():
-                try: child.configure(bg=SURFACE)
-                except Exception: pass
-        card.bind("<Enter>", on_enter)
-        card.bind("<Leave>", on_leave)
-
-    def _load_thumb(self, url, lbl):
-        img = fetch_image_pil(url)
-        if not img: return
-        img = ImageOps.fit(img, (THUMB_W, THUMB_H), Image.LANCZOS)
-        self.after(0, lambda: self._apply_thumb(lbl, img))
-
-    def _apply_thumb(self, lbl, img):
-        if not lbl.winfo_exists(): return
-        try:
-            ph = ImageTk.PhotoImage(img)
-            self._card_images.append(ph)
-            lbl.configure(image=ph, width=THUMB_W, height=THUMB_H)
-            lbl._ph = ph
-        except Exception:
-            pass
-
-    def _open_detail(self, pack):
-        self.detail_title.config(text=f"Загрузка: {pack.get('title', '')}...")
-        for w in self.gal_inner.winfo_children():
-            w.destroy()
-        self._gallery_phs.clear()
-        for w in self.dl_frame.winfo_children():
-            w.destroy()
-        self.detail_desc.configure(state="normal")
-        self.detail_desc.delete("1.0", "end")
-        self.detail_desc.configure(state="disabled")
-        self.prog_var.set(0)
-        self.prog_lbl.config(text="")
-        threading.Thread(target=self._bg_detail, args=(pack,), daemon=True).start()
-
-    def _bg_detail(self, pack):
-        if pack.get("source") == "expert":
-            detail = scrape_expert_detail(pack["url"])
-        else:
-            detail = scrape_inside_detail(pack["url"])
-        self.after(0, lambda: self._render_detail(pack, detail))
-
-    def _render_detail(self, pack, detail):
-        title = detail.get("title") or pack["title"]
-        self.detail_title.config(text=title)
-        self.detail_desc.configure(state="normal")
-        self.detail_desc.delete("1.0", "end")
-        self.detail_desc.insert("1.0", detail.get("description", ""))
-        self.detail_desc.configure(state="disabled")
-
-        for url in (detail.get("images") or [])[:8]:
-            threading.Thread(target=self._load_gallery_img, args=(url,), daemon=True).start()
-
-        dls = detail.get("downloads", [])
-        if not dls:
-            tk.Label(self.dl_frame, text="Файлы не найдены", bg=BG, fg=SUBTEXT, font=("Segoe UI", 9)).pack(pady=6)
-        for item in dls:
-            label = item.get("label", "Скачать")
-            if len(label) > 55: label = label[:52] + "..."
-            btn = ttk.Button(self.dl_frame, text=label, command=lambda it=item: self._handle_download(it))
-            btn.pack(fill="x", pady=2)
-        self.set_status(f"Выбран: {title}")
-
-    def _load_gallery_img(self, url):
-        img = fetch_image_pil(url)
-        if not img: return
-        h = 150
-        ratio = h / max(1, img.height)
-        w = max(1, int(img.width * ratio))
-        img = img.resize((w, h), Image.LANCZOS)
-        self.after(0, lambda: self._apply_gallery_img(img, url))
-
-    def _apply_gallery_img(self, img, url):
-        if not self.gal_inner.winfo_exists(): return
-        try:
-            ph = ImageTk.PhotoImage(img)
-            self._gallery_phs.append(ph)
-            lbl = tk.Label(self.gal_inner, image=ph, bg=SURFACE, cursor="hand2")
-            lbl.pack(side="left", padx=4, pady=4)
-            lbl._ph = ph
-            lbl.bind("<Button-1>", lambda e, u=url: self._view_full(u))
-        except Exception:
-            pass
-
-    def _view_full(self, url):
-        threading.Thread(target=self._worker_view_full, args=(url,), daemon=True).start()
-
-    def _worker_view_full(self, url):
-        img = fetch_image_pil(url)
-        if not img: return
-        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
-            tmp = f.name
-        img.save(tmp, "PNG")
-        os.startfile(tmp)
-
-    def _handle_download(self, item):
-        url = item.get("url", "")
-        # If it's a cloud link that we can download directly (Google Drive or Yandex.Disk)
-        if extract_gdrive_id(url) or is_yandex_disk(url):
-            mc = Path(self.mc_path_var.get())
-            dest_dir = (mc / "resourcepacks") if mc.exists() else Path.home()
-            dest_dir.mkdir(parents=True, exist_ok=True)
-            threading.Thread(target=self._bg_download, args=(url, dest_dir), daemon=True).start()
-            return
-
-        if item.get("is_cloud", False):
-            webbrowser.open(url)
-            messagebox.showinfo(
-                "Ссылка открыта в браузере",
-                "Страница облачного хранилища открыта в браузере.\n\n"
-                "1. Скачайте архив через браузер.\n"
-                "2. Во вкладке «Облако» нажмите «Установить свой .ZIP», чтобы добавить его в Minecraft!"
-            )
-            return
-
-        mc = Path(self.mc_path_var.get())
-        dest_dir = (mc / "resourcepacks") if mc.exists() else Path.home()
-        dest_dir.mkdir(parents=True, exist_ok=True)
-        threading.Thread(target=self._bg_download, args=(url, dest_dir), daemon=True).start()
-
-    def _bg_download(self, dl_url, save_dir):
-        self.after(0, lambda: self.set_status("Подготовка ссылки..."))
-        real_url = resolve_download(dl_url)
-        fname = real_url.split("/")[-1].split("?")[0] or "resourcepack.zip"
-        if not (fname.endswith(".zip") or fname.endswith(".jar")):
-            fname += ".zip"
-
-        def prog_cb(done, total):
-            if total > 0:
-                pct = done / total * 100
-                mb_d = done / (1024 * 1024)
-                mb_t = total / (1024 * 1024)
-                self.after(0, lambda p=pct, d=mb_d, t=mb_t: self._upd_prog(p, d, t))
-
-        self.after(0, lambda: self.set_status(f"Скачивание {fname}..."))
-        ref = "https://minecraft-inside.ru/" if "inside" in dl_url else "https://minecraftexpert.ru/"
-        try:
-            saved = download_universal_pack(real_url, save_dir, prog_cb, referer=ref)
-            self.after(0, lambda: self.set_status(f"Сохранено: {saved.name}"))
-            self.after(0, lambda: messagebox.showinfo(
-                "Готово! Текстурпак установлен",
-                f"Текстурпак «{saved.name}» успешно скачан в папку resourcepacks!\n\n"
-                f"Как включить в игре:\n"
-                f"1. Откройте Minecraft ➔ Настройки ➔ Наборы ресурсов (Resource Packs)\n"
-                f"2. Переместите «{saved.name}» стрелочкой вправо ➔ «Готово»!\n\n"
-                f"(Или нажмите сочетание F3 + T для мгновенной перезагрузки)"
-            ))
-        except Exception as e:
-            self.after(0, lambda: self.set_status("Ошибка скачивания", err=True))
-            ans = messagebox.askyesno(
-                "Ошибка скачивания с сайта",
-                f"Сайт не отдал файл напрямую (возможна защита Cloudflare от ботов):\n{e}\n\n"
-                f"Открыть страницу в браузере, чтобы скачать вручную?\n\n"
-                f"(После скачивания вы сможете установить его в 1 клик кнопкой «Установить свой .ZIP» во вкладке «Облако»)"
-            )
-            if ans:
-                webbrowser.open(dl_url)
-
-    def _upd_prog(self, pct, mb_done, mb_total):
-        self.prog_var.set(pct)
-        self.prog_lbl.config(text=f"{mb_done:.1f} MB / {mb_total:.1f} MB ({pct:.0f}%)")
+# ── Curated Favorites & GitHub Integration ────────────────────────────────────
 
 DEFAULT_GITHUB_REPO = "olegcool2/minecraft_Textures_maker"
 
@@ -1473,7 +1079,95 @@ def fetch_github_packs(repo=DEFAULT_GITHUB_REPO):
 
     return packs
 
-# ── Tab 2: GitHub Repository Packs ────────────────────────────────────────────
+# ── Curated Favorites Collection ─────────────────────────────────────────────
+CURATED_FAVORITE_CATEGORIES = [
+    "Все категории",
+    "🎨 HD Ванилла",
+    "🌙 Тёмный интерфейс",
+    "⏳ Ностальгия / Ретро",
+    "✨ HD Интерфейс",
+    "⚔️ PvP Битвы",
+    "💎 Современный стиль",
+    "💎 Ultra HD 64x",
+    "🔊 Звуки и эффекты"
+]
+
+CURATED_FAVORITE_PACKS = [
+    {
+        "name": "Faithful 32x (HD Ванилла)",
+        "category": "🎨 HD Ванилла",
+        "size": "12.5 MB",
+        "source": "GitHub: Faithful-32x-Java",
+        "url": "https://github.com/Faithful-Resource-Pack/Faithful-32x-Java/releases/download/september-2026-release/Faithful.32x.-.26.3.zip",
+        "image_url": "https://database.faithfulpack.net/images/branding/logos/transparent/hd/f32_logo.png?w=256",
+        "desc": "Самый знаменитый и популярный ресурс-пак в истории Minecraft! Увеличивает разрешение всех текстур в 2 раза (32x32) с сохранением ванильной эстетики и духа классической игры."
+    },
+    {
+        "name": "Default Dark Mode (Тёмная тема)",
+        "category": "🌙 Тёмный интерфейс",
+        "size": "0.7 MB",
+        "source": "GitHub: Default-Dark-Mode",
+        "url": "https://github.com/nebuIr/Default-Dark-Mode/releases/download/2026.6.0/Default-Dark-Mode-26.2-2026.6.0.zip",
+        "image_url": "https://raw.githubusercontent.com/nebuIr/Default-Dark-Mode/main/pack.png",
+        "desc": "Элегантный тёмный интерфейс для всех меню, инвентарей, сундуков, печек, наковален и верстаков. Значительно снижает нагрузку на глаза при игре ночью!"
+    },
+    {
+        "name": "Golden Days (Ретро Альфа / Бета)",
+        "category": "⏳ Ностальгия / Ретро",
+        "size": "0.4 MB",
+        "source": "GitHub: golden-days",
+        "url": "https://github.com/PoeticRainbow/golden-days/releases/download/16.3/golden-days-alpha-16.3-.1.20-to-26.3.zip",
+        "image_url": "https://raw.githubusercontent.com/PoeticRainbow/golden-days/master/cover.png",
+        "desc": "Возвращает яркие ностальгические текстуры травы, сочную листву, блоки, старый интерфейс и классические звуки золотой эры Minecraft Alpha и Beta!"
+    },
+    {
+        "name": "CozyUI+ (Уютный HD интерфейс)",
+        "category": "✨ HD Интерфейс",
+        "size": "39.1 MB",
+        "source": "GitHub: CozyUI-Plus",
+        "url": "https://github.com/Fogg05/CozyUI-Plus/releases/download/v1.10/CozyUI%2B_v1.10.zip",
+        "image_url": "https://raw.githubusercontent.com/Fogg05/CozyUI-Plus/main/description_image/banner.jpg",
+        "desc": "Красивый, современный и аккуратный редизайн панелей инвентаря, кнопок, сердечек здоровья и иконок Minecraft в высоком разрешении."
+    },
+    {
+        "name": "Plast-Pack (PvP Битвы и дуэли)",
+        "category": "⚔️ PvP Битвы",
+        "size": "6.4 MB",
+        "source": "GitHub: Plast-Pack",
+        "url": "https://github.com/Plastix/Plast-Pack/releases/download/v1.23/Plast-Pack.zip",
+        "image_url": "https://raw.githubusercontent.com/Plastix/Plast-Pack/master/pack.png",
+        "desc": "Оптимизированный ресурс-пак для PvP и битв: укороченные мечи, прозрачные меню инвентаря и улучшенный обзор в бою."
+    },
+    {
+        "name": "Modernity GTNH (Текстуры Jappa)",
+        "category": "💎 Современный стиль",
+        "size": "52.9 MB",
+        "source": "GitHub: Modernity-GTNH",
+        "url": "https://github.com/ModernityGTNH/Modernity-GTNH/releases/download/weekly-2026-09-14/Modernity-GTNH-2026-09-14.zip",
+        "image_url": "https://raw.githubusercontent.com/ModernityGTNH/Modernity-GTNH/master/pack.png",
+        "desc": "Глобальное обновление текстур мира, руд, инструментов и блоков в детализированном современном стиле Jappa."
+    },
+    {
+        "name": "Compliance 64x (Ultra HD 64x)",
+        "category": "💎 Ultra HD 64x",
+        "size": "5.5 MB",
+        "source": "GitHub: Faithful-64x-Java",
+        "url": "https://github.com/Faithful-Resource-Pack/Faithful-64x-Java/releases/download/alpha-6/Compliance_64x_-_Parity_Update.zip",
+        "image_url": "https://database.faithfulpack.net/images/branding/logos/transparent/hd/f64_logo.png?w=256",
+        "desc": "Максимальная детализация ванильного Minecraft в супер-высоком разрешении 64x64 пикселя для четкой и резкой картинки."
+    },
+    {
+        "name": "Merged Damage Sounds (Звуки урона)",
+        "category": "🔊 Звуки и эффекты",
+        "size": "0.3 MB",
+        "source": "GitHub: Merged-Damage-Sounds",
+        "url": "https://github.com/Brottweiler/Merged-Damage-Sounds/releases/download/v1.8/Merged-Damage-Sounds.zip",
+        "image_url": "https://raw.githubusercontent.com/Brottweiler/Merged-Damage-Sounds/master/pack.png",
+        "desc": "Возвращает классический смачный звук получения урона («Oof!») при падении игрока и ударах мобов."
+    }
+]
+
+# ── Tab 2: GitHub Repository & Curated Favorites ─────────────────────────────
 class GitHubTab(tk.Frame):
     def __init__(self, parent, mc_path_var, status_fn):
         super().__init__(parent, bg=BG)
@@ -1490,130 +1184,128 @@ class GitHubTab(tk.Frame):
                 pass
         self.repo_var = tk.StringVar(value=saved_repo)
 
+        self.mode = "favorites"  # "favorites" or "my_repo"
+        self._displayed_packs = []
+        self._repo_packs = []
+        self._repo_loaded = False
         self._is_downloading = False
-        self._all_packs = []
         self._selected_pack = None
         self._preview_id = 0
         self._current_screenshot_ph = None
         self._full_screenshot_pil = None
 
-        self._fallback_presets = [
-            {
-                "name": "Faithful 32x (HD Ванилла)",
-                "size": "28.5 MB",
-                "source": "GitHub / Популярный",
-                "url": "https://github.com/Faithful-Resource-Pack/Faithful-32x/releases/download/v1.20.4/Faithful-32x-1.20.4.zip",
-                "image_url": "https://raw.githubusercontent.com/Faithful-Resource-Pack/Faithful-32x/master/pack.png",
-                "desc": "Улучшенные классические текстуры в 32x32 разрешении (полная совместимость со всеми версиями)."
-            },
-            {
-                "name": "Bare Bones (Стиль трейлеров)",
-                "size": "7.8 MB",
-                "source": "GitHub / Популярный",
-                "url": "https://github.com/RobotPantaloons/Bare-Bones/releases/download/v1.20.4/Bare_Bones_1.20.4.zip",
-                "image_url": "https://raw.githubusercontent.com/RobotPantaloons/Bare-Bones/master/pack.png",
-                "desc": "Яркий мультяшный стиль официальных трейлеров Minecraft от Mojang."
-            },
-            {
-                "name": "Fresh Animations (Живые анимации)",
-                "size": "2.4 MB",
-                "source": "GitHub / Популярный",
-                "url": "https://github.com/FreshLX-nexus/Fresh-Animations/releases/download/v1.9.1/FreshAnimations_v1.9.1.zip",
-                "image_url": "https://raw.githubusercontent.com/FreshLX-nexus/Fresh-Animations/main/pack.png",
-                "desc": "Динамические живые анимации глаз, походки и эмоций всех мобов."
-            }
-        ]
         self._build()
-        self.after(300, self._load_packs)
-
-    def _create_placeholder(self, title, subtitle=""):
-        w, h = 360, 200
-        img = Image.new("RGBA", (w, h), (36, 38, 56, 255))
-        draw = ImageDraw.Draw(img)
-        draw.rectangle([0, 0, w - 1, h - 1], outline=(69, 71, 90, 255), width=1)
-        try:
-            draw.text((w // 2, h // 2 - 12), title, fill=(166, 173, 200, 255), anchor="mm")
-            if subtitle:
-                draw.text((w // 2, h // 2 + 14), subtitle, fill=(108, 112, 134, 255), anchor="mm")
-        except Exception:
-            draw.text((20, h // 2 - 12), title, fill=(166, 173, 200, 255))
-            if subtitle:
-                draw.text((20, h // 2 + 14), subtitle, fill=(108, 112, 134, 255))
-        return ImageTk.PhotoImage(img)
+        self.after(100, lambda: self._set_mode("favorites"))
 
     def _build(self):
-        # Pre-generate placeholders
-        self._ph_select = self._create_placeholder("Выберите текстур-пак в таблице слева", "Здесь появится скриншот 1.png")
-        self._ph_loading = self._create_placeholder("⏳ Загрузка скриншота...", "Поиск 1.png / 1.jpg на GitHub")
-        self._ph_noimg = self._create_placeholder("📷 Скриншот 1.png не найден", "Положите 1.png или 1.jpg рядом с файлом на GitHub")
+        # 1. Mode Switcher (Top segmented buttons)
+        mode_bar = tk.Frame(self, bg=BG)
+        mode_bar.pack(fill="x", padx=14, pady=(10, 6))
 
-        # 1. Header Banner
-        hdr = tk.Frame(self, bg=SURFACE, padx=16, pady=10)
-        hdr.pack(fill="x", padx=14, pady=(10, 8))
+        self.btn_mode_fav = tk.Button(
+            mode_bar, text="⭐ Избранные паки GitHub (Топ)",
+            bg=ACCENT, fg="#1e1e2e", activebackground="#b4befe",
+            font=("Segoe UI", 10, "bold"), relief="flat", padx=16, pady=6, cursor="hand2",
+            command=lambda: self._set_mode("favorites")
+        )
+        self.btn_mode_fav.pack(side="left", padx=(0, 6))
 
-        tk.Label(
-            hdr, text="📦 Текстур-паки из вашего GitHub репозитория",
-            bg=SURFACE, fg=ACCENT, font=("Segoe UI", 13, "bold")
-        ).pack(anchor="w")
+        self.btn_mode_repo = tk.Button(
+            mode_bar, text="👤 Мой личный репозиторий GitHub",
+            bg="#313244", fg=TEXT, activebackground="#45475a",
+            font=("Segoe UI", 10), relief="flat", padx=16, pady=6, cursor="hand2",
+            command=lambda: self._set_mode("my_repo")
+        )
+        self.btn_mode_repo.pack(side="left")
 
-        tk.Label(
-            hdr,
-            text="Приложение автоматически ищет .zip архивы и скриншоты 1.png / 1.jpg рядом с ними.\n"
-                 "При выборе любого пака в списке сразу отображается его скриншот и кнопка быстрой установки!",
-            bg=SURFACE, fg=TEXT, font=("Segoe UI", 9), justify="left"
-        ).pack(anchor="w", pady=(3, 0))
+        # 2. Dynamic Header Banner
+        self.hdr = tk.Frame(self, bg=SURFACE, padx=16, pady=8)
+        self.hdr.pack(fill="x", padx=14, pady=(0, 8))
 
-        # 2. Repository & Action Toolbar
-        bar = tk.Frame(self, bg=SURFACE, padx=14, pady=8, highlightthickness=1, highlightbackground="#45475a")
-        bar.pack(fill="x", padx=14, pady=(0, 8))
+        self.hdr_title = tk.Label(
+            self.hdr, text="", bg=SURFACE, fg=ACCENT, font=("Segoe UI", 12, "bold")
+        )
+        self.hdr_title.pack(anchor="w")
 
-        tk.Label(bar, text="Репозиторий:", bg=SURFACE, fg=SUBTEXT, font=("Segoe UI", 9, "bold")).pack(side="left")
-        self.entry_repo = tk.Entry(bar, textvariable=self.repo_var, width=32, bg=BG, fg=TEXT, insertbackground=TEXT, font=("Consolas", 9), relief="flat")
+        self.hdr_sub = tk.Label(
+            self.hdr, text="", bg=SURFACE, fg=TEXT, font=("Segoe UI", 9), justify="left"
+        )
+        self.hdr_sub.pack(anchor="w", pady=(2, 0))
+
+        # 3. Dynamic Toolbars Container
+        self.toolbar_box = tk.Frame(self, bg=BG)
+        self.toolbar_box.pack(fill="x", padx=14, pady=(0, 8))
+
+        # Toolbar A: Favorites Filter
+        self.fav_toolbar = tk.Frame(self.toolbar_box, bg=SURFACE, padx=12, pady=7, highlightthickness=1, highlightbackground="#45475a")
+
+        tk.Label(self.fav_toolbar, text="Категория:", bg=SURFACE, fg=ACCENT, font=("Segoe UI", 9, "bold")).pack(side="left")
+        self.cat_var = tk.StringVar(value="Все категории")
+        self.cat_cb = ttk.Combobox(self.fav_toolbar, textvariable=self.cat_var, values=CURATED_FAVORITE_CATEGORIES, state="readonly", width=22)
+        self.cat_cb.pack(side="left", padx=(6, 12))
+        self.cat_cb.bind("<<ComboboxSelected>>", self._filter_favorites)
+
+        tk.Label(self.fav_toolbar, text="Поиск:", bg=SURFACE, fg=SUBTEXT, font=("Segoe UI", 9)).pack(side="left")
+        self.search_fav = tk.StringVar()
+        s_ent = tk.Entry(self.fav_toolbar, textvariable=self.search_fav, width=20, bg=BG, fg=TEXT, insertbackground=TEXT, relief="flat", font=("Segoe UI", 9))
+        s_ent.pack(side="left", padx=(6, 6))
+        s_ent.bind("<KeyRelease>", self._filter_favorites)
+
+        btn_fav_clear = tk.Button(
+            self.fav_toolbar, text="✕", bg="#313244", fg=SUBTEXT, activebackground="#45475a",
+            font=("Segoe UI", 8, "bold"), relief="flat", padx=6, pady=2, cursor="hand2",
+            command=self._clear_fav_search
+        )
+        btn_fav_clear.pack(side="left", padx=(0, 10))
+
+        btn_fav_local = tk.Button(
+            self.fav_toolbar, text="📥 Установить свой .ZIP с ПК", bg=SUCCESS, fg="#1e1e2e", activebackground="#94e2d5",
+            font=("Segoe UI", 9, "bold"), relief="flat", padx=12, pady=4, cursor="hand2", command=self._install_local_zip
+        )
+        btn_fav_local.pack(side="right")
+
+        # Toolbar B: My Repo Controls
+        self.repo_toolbar = tk.Frame(self.toolbar_box, bg=SURFACE, padx=12, pady=7, highlightthickness=1, highlightbackground="#45475a")
+
+        tk.Label(self.repo_toolbar, text="Репозиторий:", bg=SURFACE, fg=SUBTEXT, font=("Segoe UI", 9, "bold")).pack(side="left")
+        self.entry_repo = tk.Entry(self.repo_toolbar, textvariable=self.repo_var, width=30, bg=BG, fg=TEXT, insertbackground=TEXT, font=("Consolas", 9), relief="flat")
         self.entry_repo.pack(side="left", padx=(6, 10))
 
         btn_refresh = tk.Button(
-            bar, text="🔄 Обновить список с GitHub", bg=ACCENT, fg="#1e1e2e", activebackground="#b4befe",
-            font=("Segoe UI", 9, "bold"), relief="flat", padx=12, pady=4, cursor="hand2", command=self._load_packs
+            self.repo_toolbar, text="🔄 Обновить список с GitHub", bg=ACCENT, fg="#1e1e2e", activebackground="#b4befe",
+            font=("Segoe UI", 9, "bold"), relief="flat", padx=10, pady=4, cursor="hand2", command=self._load_repo_packs
         )
         btn_refresh.pack(side="left", padx=(0, 6))
 
         btn_open_gh = tk.Button(
-            bar, text="🌐 Открыть репозиторий", bg="#45475a", fg=TEXT, activebackground="#585b70",
-            font=("Segoe UI", 9), relief="flat", padx=10, pady=4, cursor="hand2", command=self._open_github_repo
+            self.repo_toolbar, text="🌐 Открыть", bg="#45475a", fg=TEXT, activebackground="#585b70",
+            font=("Segoe UI", 9), relief="flat", padx=8, pady=4, cursor="hand2", command=self._open_github_repo
         )
         btn_open_gh.pack(side="left", padx=(0, 6))
 
         btn_rel_gh = tk.Button(
-            bar, text="🏷️ Создать релиз", bg="#45475a", fg=TEXT, activebackground="#585b70",
-            font=("Segoe UI", 9), relief="flat", padx=10, pady=4, cursor="hand2", command=self._open_github_new_release
+            self.repo_toolbar, text="🏷️ Создать релиз", bg="#45475a", fg=TEXT, activebackground="#585b70",
+            font=("Segoe UI", 9), relief="flat", padx=8, pady=4, cursor="hand2", command=self._open_github_new_release
         )
         btn_rel_gh.pack(side="left", padx=(0, 6))
 
-        btn_local = tk.Button(
-            bar, text="📥 Установить свой .ZIP с ПК", bg=SUCCESS, fg="#1e1e2e", activebackground="#94e2d5",
+        btn_repo_local = tk.Button(
+            self.repo_toolbar, text="📥 Установить свой .ZIP с ПК", bg=SUCCESS, fg="#1e1e2e", activebackground="#94e2d5",
             font=("Segoe UI", 9, "bold"), relief="flat", padx=12, pady=4, cursor="hand2", command=self._install_local_zip
         )
-        btn_local.pack(side="right")
+        btn_repo_local.pack(side="right")
 
-        # 3. Main Workspace: Split into Left: Table, Right: Screenshot Preview Card
+        # 4. Main Workspace Split (Table on Left, Preview Card on Right)
         paned = tk.PanedWindow(self, orient="horizontal", bg=BG, sashwidth=6, sashrelief="flat")
         paned.pack(fill="both", expand=True, padx=14, pady=(0, 6))
 
-        # Left Frame: Treeview Table
-        left_frame = ttk.LabelFrame(paned, text=" Список текстур-паков на GitHub ")
-        paned.add(left_frame, minsize=380, width=540)
+        # Left Frame: Table
+        self.left_frame = ttk.LabelFrame(paned, text=" Каталог ресурс-паков ")
+        paned.add(self.left_frame, minsize=380, width=540)
 
-        cols = ("name", "size", "source")
-        self.pack_tree = ttk.Treeview(left_frame, columns=cols, show="headings", height=10)
-        self.pack_tree.heading("name", text="Название архива")
-        self.pack_tree.heading("size", text="Размер")
-        self.pack_tree.heading("source", text="Раздел / Папка")
-
-        self.pack_tree.column("name", width=250, anchor="w")
-        self.pack_tree.column("size", width=85, anchor="center")
-        self.pack_tree.column("source", width=180, anchor="w")
-
-        sb = ttk.Scrollbar(left_frame, command=self.pack_tree.yview)
+        cols = ("col1", "col2", "col3")
+        self.pack_tree = ttk.Treeview(self.left_frame, columns=cols, show="headings", height=10)
+        sb = ttk.Scrollbar(self.left_frame, command=self.pack_tree.yview)
         self.pack_tree.configure(yscrollcommand=sb.set)
         self.pack_tree.pack(side="left", fill="both", expand=True)
         sb.pack(side="right", fill="y")
@@ -1623,10 +1315,10 @@ class GitHubTab(tk.Frame):
         self.pack_tree.bind("<Double-1>", lambda e: self._download_selected())
 
         # Right Frame: Preview Card
-        right_frame = ttk.LabelFrame(paned, text=" Предпросмотр и скриншот (1.png / 1.jpg) ")
-        paned.add(right_frame, minsize=420)
+        self.right_frame = ttk.LabelFrame(paned, text=" Предпросмотр и скриншот ")
+        paned.add(self.right_frame, minsize=420)
 
-        card_inner = tk.Frame(right_frame, bg=SURFACE, padx=14, pady=10)
+        card_inner = tk.Frame(self.right_frame, bg=SURFACE, padx=14, pady=10)
         card_inner.pack(fill="both", expand=True)
 
         self.card_title = tk.Label(
@@ -1636,7 +1328,7 @@ class GitHubTab(tk.Frame):
         self.card_title.pack(anchor="w")
 
         self.card_meta = tk.Label(
-            card_inner, text="Размер: --  •  Источник: --", bg=SURFACE, fg=SUBTEXT,
+            card_inner, text="Размер: --  •  Категория: --", bg=SURFACE, fg=SUBTEXT,
             font=("Segoe UI", 9)
         )
         self.card_meta.pack(anchor="w", pady=(2, 8))
@@ -1646,7 +1338,10 @@ class GitHubTab(tk.Frame):
         img_box.pack_propagate(False)
         img_box.pack(pady=(0, 4))
 
-        self.card_img_lbl = tk.Label(img_box, bg="#242638", image=self._ph_select, cursor="hand2")
+        self.card_img_lbl = tk.Label(
+            img_box, bg="#242638", fg=SUBTEXT, font=("Segoe UI", 10), justify="center", wraplength=320, cursor="hand2",
+            text="📁 Выберите текстур-пак слева\n\nЗдесь появится скриншот или иконка"
+        )
         self.card_img_lbl.pack(fill="both", expand=True)
         self.card_img_lbl.bind("<Button-1>", lambda e: self._on_screenshot_click())
         img_box.bind("<Button-1>", lambda e: self._on_screenshot_click())
@@ -1685,7 +1380,7 @@ class GitHubTab(tk.Frame):
         )
         self.btn_download_other.pack(side="left")
 
-        # 4. Progress Card
+        # 5. Progress Card
         self.prog_card = tk.Frame(self, bg=SURFACE, padx=16, pady=6)
         self.prog_card.pack(fill="x", padx=14, pady=(0, 6))
 
@@ -1696,17 +1391,84 @@ class GitHubTab(tk.Frame):
         self.prog_lbl = tk.Label(self.prog_card, text="Выберите пак в таблице и нажмите кнопку установки.", bg=SURFACE, fg=SUBTEXT, font=("Segoe UI", 9))
         self.prog_lbl.pack(anchor="w")
 
-        # 5. Instructions Box
-        inst = tk.Frame(self, bg="#242638", padx=14, pady=8, highlightthickness=1, highlightbackground="#45475a")
-        inst.pack(fill="x", padx=14, pady=(0, 8))
-        tk.Label(
-            inst,
-            text="💡 Как закинуть паки и скриншоты в свой репозиторий на GitHub:\n"
-                 "• Вариант 1 (через Релизы — рекомендуется): Нажмите «🏷️ Создать релиз», прикрепите ВашПак.zip и рядом скриншот 1.png (или 1.jpg).\n"
-                 "• Вариант 2 (через папки): Создайте в репозитории папку packs/ИмяПака/, положите туда .zip и рядом 1.png (или 1.jpg).\n"
-                 "После этого нажмите «🔄 Обновить список» — пак сразу появится с картинкой и кнопкой установки в 1 клик!",
-            bg="#242638", fg=TEXT, font=("Segoe UI", 9), justify="left"
-        ).pack(anchor="w")
+        # 6. Bottom Instruction / Tip Card
+        self.tip_frame = tk.Frame(self, bg="#242638", padx=14, pady=8, highlightthickness=1, highlightbackground="#45475a")
+        self.tip_frame.pack(fill="x", padx=14, pady=(0, 8))
+        self.tip_lbl = tk.Label(
+            self.tip_frame, text="", bg="#242638", fg=TEXT, font=("Segoe UI", 9), justify="left"
+        )
+        self.tip_lbl.pack(anchor="w")
+
+    def _set_mode(self, mode):
+        self.mode = mode
+        if mode == "favorites":
+            self.btn_mode_fav.configure(bg=ACCENT, fg="#1e1e2e", font=("Segoe UI", 10, "bold"))
+            self.btn_mode_repo.configure(bg="#313244", fg=TEXT, font=("Segoe UI", 10))
+
+            self.hdr_title.config(text="⭐ Избранные проверенные текстур-паки с GitHub")
+            self.hdr_sub.config(text="Коллекция лучших проверенных наборов текстур. Выберите любой пак, оцените скриншот и установите в игру в 1 клик!")
+
+            self.repo_toolbar.pack_forget()
+            self.fav_toolbar.pack(fill="x")
+
+            self.left_frame.config(text=" Избранная коллекция ресурс-паков ")
+            self.pack_tree.heading("col1", text="Название пака")
+            self.pack_tree.heading("col2", text="Категория")
+            self.pack_tree.heading("col3", text="Размер")
+            self.pack_tree.column("col1", width=240, anchor="w")
+            self.pack_tree.column("col2", width=150, anchor="w")
+            self.pack_tree.column("col3", width=80, anchor="center")
+
+            self.tip_lbl.config(
+                text="💡 Выберите любой пак из списка выше — справа сразу отобразится его скриншот, описание и кнопка быстрой установки в Minecraft!"
+            )
+            self._filter_favorites()
+        else:
+            self.btn_mode_repo.configure(bg=ACCENT, fg="#1e1e2e", font=("Segoe UI", 10, "bold"))
+            self.btn_mode_fav.configure(bg="#313244", fg=TEXT, font=("Segoe UI", 10))
+
+            self.hdr_title.config(text="📦 Текстур-паки из вашего GitHub репозитория")
+            self.hdr_sub.config(text="Приложение автоматически ищет .zip архивы и скриншоты 1.png / 1.jpg рядом с ними в вашем личном репозитории.")
+
+            self.fav_toolbar.pack_forget()
+            self.repo_toolbar.pack(fill="x")
+
+            self.left_frame.config(text=" Список файлов в вашем репозитории ")
+            self.pack_tree.heading("col1", text="Название архива")
+            self.pack_tree.heading("col2", text="Размер")
+            self.pack_tree.heading("col3", text="Раздел / Папка")
+            self.pack_tree.column("col1", width=240, anchor="w")
+            self.pack_tree.column("col2", width=85, anchor="center")
+            self.pack_tree.column("col3", width=160, anchor="w")
+
+            self.tip_lbl.config(
+                text="💡 Как закинуть паки и скриншоты в свой репозиторий:\n"
+                     "• Нажмите «🏷️ Создать релиз», прикрепите .zip архив и рядом скриншот 1.png (или 1.jpg).\n"
+                     "• Либо создайте папку packs/ИмяПака/ и загрузите .zip и 1.png туда. Затем нажмите «🔄 Обновить список»!"
+            )
+            if not self._repo_loaded:
+                self._load_repo_packs()
+            else:
+                self._displayed_packs = list(self._repo_packs)
+                self._render_table()
+
+    def _clear_fav_search(self):
+        self.search_fav.set("")
+        self._filter_favorites()
+
+    def _filter_favorites(self, *_):
+        cat = self.cat_var.get()
+        q = self.search_fav.get().strip().lower()
+        res = []
+        for p in CURATED_FAVORITE_PACKS:
+            if cat != "Все категории" and p.get("category") != cat:
+                continue
+            if q and (q not in p.get("name", "").lower() and q not in p.get("desc", "").lower() and q not in p.get("category", "").lower()):
+                continue
+            res.append(p)
+        self._displayed_packs = res
+        self._render_table()
+        self.set_status(f"Показано {len(res)} избранных текстур-паков")
 
     def _open_github_repo(self):
         repo = self.repo_var.get().strip() or DEFAULT_GITHUB_REPO
@@ -1716,52 +1478,88 @@ class GitHubTab(tk.Frame):
         repo = self.repo_var.get().strip() or DEFAULT_GITHUB_REPO
         webbrowser.open(f"https://github.com/{repo}/releases/new")
 
-    def _load_packs(self):
+    def _load_repo_packs(self):
         repo = self.repo_var.get().strip() or DEFAULT_GITHUB_REPO
         try:
             (Path.home() / ".mctexturereplacer_repo.txt").write_text(repo, encoding="utf-8")
         except Exception:
             pass
         self.set_status("Загрузка списка паков с GitHub...")
-        self.prog_lbl.config(text=f"Поиск текстур-паков и скриншотов в репозитории {repo}...")
-        threading.Thread(target=self._bg_load_packs, daemon=True).start()
+        self.prog_lbl.config(text=f"Поиск архивов и скриншотов в репозитории {repo}...")
+        threading.Thread(target=self._bg_load_repo, daemon=True).start()
 
-    def _bg_load_packs(self):
+    def _bg_load_repo(self):
         repo = self.repo_var.get().strip() or DEFAULT_GITHUB_REPO
         packs = fetch_github_packs(repo)
-        is_preset = False
-        if not packs:
-            packs = list(self._fallback_presets)
-            is_preset = True
-        self._all_packs = packs
-        self.after(0, lambda: self._render_table(is_preset))
+        self._repo_packs = packs
+        self._repo_loaded = True
+        self.after(0, self._on_repo_loaded)
 
-    def _render_table(self, is_preset=False):
+    def _on_repo_loaded(self):
+        if self.mode == "my_repo":
+            self._displayed_packs = list(self._repo_packs)
+            self._render_table()
+
+    def _render_table(self):
         self.pack_tree.delete(*self.pack_tree.get_children())
-        for i, p in enumerate(self._all_packs):
-            self.pack_tree.insert(
-                "", "end", iid=str(i),
-                values=(p.get("name", ""), p.get("size", "--"), p.get("source", "GitHub"))
-            )
-        msg = f"Загружено {len(self._all_packs)} паков с GitHub"
-        if is_preset:
-            msg += " (показаны примеры, пока репозиторий пуст)"
-        self.set_status(msg)
-        self.prog_lbl.config(text=f"Готово: найдено {len(self._all_packs)} текстур-паков. Выберите пак для просмотра скриншота.")
+        if not self._displayed_packs:
+            if self.mode == "favorites":
+                self.card_title.config(text="Ничего не найдено")
+                self.card_meta.config(text="Попробуйте изменить запрос")
+                self.card_img_lbl.config(image="", text="🔍 По вашему запросу ничего не найдено")
+                self.card_hint_lbl.config(text="")
+                self.card_desc.configure(state="normal")
+                self.card_desc.delete("1.0", "end")
+                self.card_desc.insert("1.0", "Выберите другую категорию или очистите строку поиска.")
+                self.card_desc.configure(state="disabled")
+                self.btn_download.config(state="disabled")
+                self.btn_download_other.config(state="disabled")
+            else:
+                self.set_status("Репозиторий пока пуст")
+                self.prog_lbl.config(text="В вашем репозитории пока нет паков. Загрузите файлы на GitHub и нажмите «Обновить список».")
+                self.card_title.config(text="Репозиторий пока пуст")
+                self.card_meta.config(text="Архивы не найдены")
+                self.card_img_lbl.config(image="", text="📁 В вашем репозитории пока нет текстур-паков\n\nНажмите кнопку «Создать релиз» выше\nи загрузите ваш .zip пак и скриншот 1.png!\n\n(Или переключитесь на «⭐ Избранные паки»)")
+                self.card_hint_lbl.config(text="")
+                self.card_desc.configure(state="normal")
+                self.card_desc.delete("1.0", "end")
+                self.card_desc.insert("1.0", "Чтобы паки появились здесь, создайте новый релиз в репозитории на GitHub и прикрепите туда .zip архив и скриншот 1.png (или 1.jpg).")
+                self.card_desc.configure(state="disabled")
+                self.btn_download.config(state="disabled", text="⚡ Скачать и установить в Minecraft")
+                self.btn_download_other.config(state="disabled")
+            return
+
+        for i, p in enumerate(self._displayed_packs):
+            if self.mode == "favorites":
+                self.pack_tree.insert(
+                    "", "end", iid=str(i),
+                    values=(p.get("name", ""), p.get("category", ""), p.get("size", "--"))
+                )
+            else:
+                self.pack_tree.insert(
+                    "", "end", iid=str(i),
+                    values=(p.get("name", ""), p.get("size", "--"), p.get("source", "GitHub"))
+                )
+
+        if self.mode == "favorites":
+            self.prog_lbl.config(text=f"Доступно {len(self._displayed_packs)} избранных паков. Выберите пак для просмотра и установки.")
+        else:
+            self.set_status(f"Загружено {len(self._displayed_packs)} паков из репозитория")
+            self.prog_lbl.config(text=f"Найдено {len(self._displayed_packs)} текстур-паков в вашем репозитории.")
+
         # Auto-select first item
-        if self._all_packs:
-            self.pack_tree.selection_set("0")
-            self.pack_tree.focus("0")
-            self._on_pack_select()
+        self.pack_tree.selection_set("0")
+        self.pack_tree.focus("0")
+        self._on_pack_select()
 
     def _on_pack_select(self, event=None):
         sel = self.pack_tree.selection()
         if not sel:
             return
         idx = int(sel[0])
-        if idx >= len(self._all_packs):
+        if idx >= len(self._displayed_packs):
             return
-        pack = self._all_packs[idx]
+        pack = self._displayed_packs[idx]
         self._selected_pack = pack
 
         self._preview_id += 1
@@ -1769,7 +1567,8 @@ class GitHubTab(tk.Frame):
 
         # Update card UI
         self.card_title.config(text=pack.get("name", "Ресурспак"))
-        self.card_meta.config(text=f"📦 Размер: {pack.get('size', '--')}  •  Раздел: {pack.get('source', '')}")
+        cat_or_src = pack.get("category") or pack.get("source", "")
+        self.card_meta.config(text=f"📦 Размер: {pack.get('size', '--')}  •  {cat_or_src}")
 
         self.card_desc.configure(state="normal")
         self.card_desc.delete("1.0", "end")
@@ -1780,8 +1579,8 @@ class GitHubTab(tk.Frame):
         self.btn_download_other.config(state="normal")
 
         # Show loading placeholder
-        self.card_img_lbl.config(image=self._ph_loading)
-        self.card_hint_lbl.config(text="⏳ Загрузка скриншота...")
+        self.card_img_lbl.config(image="", text="⏳ Загрузка превью...")
+        self.card_hint_lbl.config(text="Пожалуйста, подождите...")
         self._full_screenshot_pil = None
 
         threading.Thread(target=self._bg_load_screenshot, args=(pack, req_id), daemon=True).start()
@@ -1792,7 +1591,7 @@ class GitHubTab(tk.Frame):
         if img_url:
             img = fetch_image_pil(img_url)
 
-        # If not found yet, try candidate URLs (1.png, 1.jpg in possible paths)
+        # Try candidate URLs if not found
         if not img and pack.get("candidate_img_urls"):
             for cand_url in pack.get("candidate_img_urls", []):
                 img = fetch_image_pil(cand_url)
@@ -1828,12 +1627,14 @@ class GitHubTab(tk.Frame):
 
             ph = ImageTk.PhotoImage(bg_card)
             self._current_screenshot_ph = ph
-            self.card_img_lbl.config(image=ph)
+            self.card_img_lbl.config(image=ph, text="")
             self.card_hint_lbl.config(text="🔍 Кликните по скриншоту, чтобы открыть в полном размере")
             self._full_screenshot_pil = img
         else:
-            self.card_img_lbl.config(image=self._ph_noimg)
-            self.card_hint_lbl.config(text="📷 Скриншот 1.png / 1.jpg не найден для этого пака")
+            msg = ("📷 Скриншот 1.png / 1.jpg не найден\n\nПоложите 1.png или 1.jpg рядом с файлом на GitHub"
+                   if self.mode == "my_repo" else "📷 Превью временно недоступно")
+            self.card_img_lbl.config(image="", text=msg)
+            self.card_hint_lbl.config(text="")
             self._full_screenshot_pil = None
 
     def _on_screenshot_click(self):
@@ -1855,7 +1656,7 @@ class GitHubTab(tk.Frame):
             messagebox.showinfo("Выбор", "Выберите текстур-пак в таблице!")
             return
         idx = int(sel[0])
-        pack = self._all_packs[idx]
+        pack = self._displayed_packs[idx]
         mc = Path(self.mc_path_var.get())
         if not mc.exists():
             messagebox.showerror("Ошибка", f"Папка .minecraft не найдена:\n{mc}")
@@ -1870,7 +1671,7 @@ class GitHubTab(tk.Frame):
             messagebox.showinfo("Выбор", "Выберите текстур-пак в таблице!")
             return
         idx = int(sel[0])
-        pack = self._all_packs[idx]
+        pack = self._displayed_packs[idx]
         d = filedialog.askdirectory(title="Выберите папку для сохранения")
         if not d: return
         self._start_download(pack, Path(d), is_mc=False)
@@ -1882,7 +1683,7 @@ class GitHubTab(tk.Frame):
         self._is_downloading = True
         self.prog_var.set(0)
         pname = pack.get("name", "пака")
-        self.prog_lbl.config(text=f"Скачивание {pname} с GitHub...")
+        self.prog_lbl.config(text=f"Скачивание {pname}...")
         self.set_status(f"Скачивание: {pname}...")
 
         def worker():
@@ -1919,11 +1720,11 @@ class GitHubTab(tk.Frame):
         if is_mc:
             messagebox.showinfo(
                 "Готово! Текстурпак установлен",
-                f"Ресурспак «{saved_path.name}» успешно скачан с GitHub и установлен в Minecraft!\n\n"
+                f"Ресурспак «{saved_path.name}» успешно скачан и добавлен в Minecraft!\n\n"
                 f"Как включить в игре:\n"
                 f"1. Откройте Minecraft ➔ Настройки ➔ Наборы ресурсов (Resource Packs)\n"
                 f"2. Переместите «{saved_path.name}» стрелочкой вправо ➔ «Готово»!\n\n"
-                f"(Если игра уже запущена, нажмите F3 + T для мгновенной перезагрузки)"
+                f"(Если игра уже запущена, нажмите F3 + T для мгновенной перезагрузки текстур)"
             )
         else:
             messagebox.showinfo("Готово!", f"Файл сохранен в:\n{saved_path}")
@@ -1992,14 +1793,9 @@ class App(tk.Tk):
 
         self.tex_tab    = TextureTab(nb, self.mc_path_var, self._set_status)
         self.github_tab = GitHubTab(nb, self.mc_path_var, self._set_status)
-        self.browse_tab = BrowseTab(nb, self.mc_path_var, self._set_status)
 
         nb.add(self.tex_tab,    text="  ✏️ Заменить на свои фото  ")
-        nb.add(self.github_tab, text="  📦 Текстур-паки из GitHub  ")
-        nb.add(self.browse_tab, text="  🌐 Каталог сайтов (Minecraft-Inside + MinecraftExpert)  ")
-
-        # Load first page
-        self.after(300, lambda: self.browse_tab._load_page(1))
+        nb.add(self.github_tab, text="  ⭐ Избранное и GitHub  ")
 
         self.status_var = tk.StringVar(value="Готов к работе")
         sb = tk.Frame(self, bg=SURFACE, pady=5)
