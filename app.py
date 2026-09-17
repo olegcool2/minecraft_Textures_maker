@@ -405,10 +405,26 @@ class TextureTab(tk.Frame):
         self.pack_name  = tk.StringVar(value="MyTexturePack")
         self._orig_ph = None
         self._res_ph  = None
+        self._empty_ph = None
         self._build()
         self.after(300, self._load_jars)
 
     def _build(self):
+        # 1. Anchored bottom bar - packed FIRST so it is NEVER hidden on small screens
+        bot = tk.Frame(self, bg=SURFACE, pady=10)
+        bot.pack(fill="x", side="bottom")
+        tk.Label(bot, text="📦 Имя пака:", bg=SURFACE, fg=TEXT, font=("Segoe UI", 9, "bold")).pack(side="left", padx=(14, 4))
+        tk.Entry(bot, textvariable=self.pack_name, width=18, bg=BG, fg=TEXT, insertbackground=TEXT, relief="flat", font=("Segoe UI", 9)).pack(side="left", padx=(0, 10))
+        
+        btn_inst = tk.Button(bot, text="🚀 Шаг 3: Установить в Minecraft", bg=SUCCESS, fg="#1e1e2e",
+                             activebackground="#94e2d5", font=("Segoe UI", 9, "bold"), relief="flat",
+                             padx=14, pady=4, cursor="hand2", command=self._install)
+        btn_inst.pack(side="left", padx=4)
+        
+        ttk.Button(bot, text="🗜 Экспорт в ZIP", command=self._save_zip).pack(side="left", padx=4)
+        ttk.Button(bot, text="📁 В папку", command=self._save_folder).pack(side="left", padx=4)
+
+        # 2. Top bar: Minecraft version jar selection
         ctrl = tk.Frame(self, bg=BG, pady=6)
         ctrl.pack(fill="x", padx=14)
         tk.Label(ctrl, text="Версия:", bg=BG, fg=SUBTEXT, font=("Segoe UI", 9)).pack(side="left")
@@ -417,37 +433,49 @@ class TextureTab(tk.Frame):
         self.jar_combo.bind("<<ComboboxSelected>>", self._on_jar)
         ttk.Button(ctrl, text="Загрузить версии", command=self._load_jars).pack(side="left", padx=2)
 
+        # 3. Split workspace
         paned = tk.PanedWindow(self, orient="horizontal", bg=BG, sashwidth=6, sashrelief="flat")
-        paned.pack(fill="both", expand=True, padx=12)
+        paned.pack(fill="both", expand=True, padx=12, pady=(0, 4))
+        
         left = tk.Frame(paned, bg=BG)
-        paned.add(left, minsize=270)
+        paned.add(left, minsize=260)
         self._build_left(left)
+        
         right = tk.Frame(paned, bg=BG)
         paned.add(right, minsize=440)
         self._build_right(right)
-
-        bot = tk.Frame(self, bg=SURFACE, pady=8)
-        bot.pack(fill="x", side="bottom")
-        tk.Label(bot, text="Название пака:", bg=SURFACE, fg=SUBTEXT, font=("Segoe UI", 9)).pack(side="left", padx=(16, 4))
-        tk.Entry(bot, textvariable=self.pack_name, width=24, bg=BG, fg=TEXT, insertbackground=TEXT, relief="flat").pack(side="left", padx=(0, 10))
-        ttk.Button(bot, text="📁 Папка", command=self._save_folder).pack(side="left", padx=3)
-        ttk.Button(bot, text="🗜 ZIP", command=self._save_zip).pack(side="left", padx=3)
-        ttk.Button(bot, text="🚀 Установить в MC", command=self._install).pack(side="left", padx=3)
 
     def _build_left(self, p):
         r = tk.Frame(p, bg=BG, pady=2)
         r.pack(fill="x")
         tk.Label(r, text="Категория:", bg=BG, fg=SUBTEXT, font=("Segoe UI", 9)).pack(side="left")
-        self.cat_combo = ttk.Combobox(r, state="readonly", values=list(TEXTURE_CATEGORIES.keys()), width=22)
+        self.cat_combo = ttk.Combobox(r, state="readonly", values=list(TEXTURE_CATEGORIES.keys()), width=20)
         self.cat_combo.current(0)
         self.cat_combo.pack(side="left", padx=6)
         self.cat_combo.bind("<<ComboboxSelected>>", self._filter)
+
         r2 = tk.Frame(p, bg=BG, pady=2)
         r2.pack(fill="x")
         tk.Label(r2, text="Поиск:", bg=BG, fg=SUBTEXT, font=("Segoe UI", 9)).pack(side="left")
         self.search_var = tk.StringVar()
         self.search_var.trace_add("write", lambda *_: self._filter())
-        tk.Entry(r2, textvariable=self.search_var, width=24, bg=SURFACE, fg=TEXT, insertbackground=TEXT, relief="flat").pack(side="left", padx=6)
+        tk.Entry(r2, textvariable=self.search_var, width=22, bg=SURFACE, fg=TEXT, insertbackground=TEXT, relief="flat").pack(side="left", padx=6)
+
+        # Quick preset chips
+        chips = tk.Frame(p, bg=BG, pady=3)
+        chips.pack(fill="x")
+        tk.Label(chips, text="Быстро:", bg=BG, fg=SUBTEXT, font=("Segoe UI", 8)).pack(side="left")
+        def _quick(q, cat="All"):
+            if cat in TEXTURE_CATEGORIES:
+                self.cat_combo.set(cat)
+            self.search_var.set(q)
+        for name, query, cname in [("🗿 Тотем", "totem", "Items"), ("🟩 Трава", "grass_block", "Blocks"), ("💎 Алмаз", "diamond", "Items"), ("💣 TNT", "tnt", "Blocks")]:
+            btn = tk.Button(chips, text=name, bg=SURFACE, fg=TEXT, font=("Segoe UI", 8),
+                            relief="flat", padx=4, pady=1, cursor="hand2",
+                            activebackground=ACCENT, activeforeground="#1e1e2e",
+                            command=lambda _q=query, _c=cname: _quick(_q, _c))
+            btn.pack(side="left", padx=2)
+
         lf = tk.Frame(p, bg=BG)
         lf.pack(fill="both", expand=True, pady=4)
         self.tex_list = tk.Listbox(lf, bg=SURFACE, fg=TEXT, selectbackground=ACCENT, selectforeground="#1e1e2e", relief="flat", font=("Consolas", 9), activestyle="none")
@@ -456,56 +484,101 @@ class TextureTab(tk.Frame):
         self.tex_list.pack(side="left", fill="both", expand=True)
         sb.pack(side="right", fill="y")
         self.tex_list.bind("<<ListboxSelect>>", self._on_tex)
+        self.tex_list.bind("<ButtonRelease-1>", self._on_tex)
         self.cnt = tk.Label(p, text="", bg=BG, fg=SUBTEXT, font=("Segoe UI", 8))
         self.cnt.pack()
 
     def _build_right(self, p):
+        # Image preview cards
         prev = tk.Frame(p, bg=BG)
-        prev.pack(fill="x", pady=(0, 8))
-        def card(f, lbl):
-            c = tk.Frame(f, bg=SURFACE, padx=10, pady=8)
+        prev.pack(fill="x", pady=(0, 6))
+
+        # Blank 128x128 image so labels never expand to text character units
+        self._empty_ph = ImageTk.PhotoImage(Image.new("RGBA", (128, 128), (45, 47, 65, 255)))
+
+        def card(parent, title, hint, click_fn=None):
+            c = tk.Frame(parent, bg=SURFACE, padx=10, pady=8, highlightthickness=1, highlightbackground="#45475a")
             c.pack(side="left", padx=(0, 10))
-            tk.Label(c, text=lbl, bg=SURFACE, fg=SUBTEXT, font=("Segoe UI", 9)).pack()
-            il = tk.Label(c, bg=SURFACE, width=130, height=130)
-            il.pack()
-            sl = tk.Label(c, text="--", bg=SURFACE, fg=SUBTEXT, font=("Segoe UI", 8))
-            sl.pack()
+            tk.Label(c, text=title, bg=SURFACE, fg=ACCENT, font=("Segoe UI", 9, "bold")).pack(pady=(0, 4))
+            
+            box = tk.Frame(c, width=128, height=128, bg="#242638")
+            box.pack_propagate(False)
+            box.pack()
+            
+            il = tk.Label(box, bg="#242638", image=self._empty_ph, cursor="hand2" if click_fn else "")
+            il.pack(fill="both", expand=True)
+            if click_fn:
+                il.bind("<Button-1>", lambda e: click_fn())
+                box.bind("<Button-1>", lambda e: click_fn())
+            
+            sl = tk.Label(c, text=hint, bg=SURFACE, fg=SUBTEXT, font=("Segoe UI", 8))
+            sl.pack(pady=(4, 0))
             return il, sl
-        self.orig_lbl, self.orig_sz = card(prev, "Оригинал")
-        self.res_lbl,  self.res_sz  = card(prev, "Результат")
-        sf = ttk.LabelFrame(p, text=" Настройки замены ")
-        sf.pack(fill="x", pady=4)
-        mr = tk.Frame(sf, bg=BG)
-        mr.pack(fill="x", padx=8, pady=4)
-        tk.Label(mr, text="Масштаб:", bg=BG, fg=TEXT, font=("Segoe UI", 9)).pack(side="left")
-        for txt, val in [("Fill", "fill"), ("Fit", "fit"), ("Stretch", "stretch"), ("Tile", "tile")]:
-            tk.Radiobutton(mr, text=txt, variable=self.fit_mode, value=val, bg=BG, fg=TEXT, selectcolor=SURFACE, activebackground=BG, command=self._update_preview).pack(side="left", padx=5)
-        sr = tk.Frame(sf, bg=BG)
-        sr.pack(fill="x", padx=8, pady=4)
-        tk.Label(sr, text="Размер:", bg=BG, fg=TEXT, font=("Segoe UI", 9)).pack(side="left")
-        self.size_combo = ttk.Combobox(sr, values=[str(s) for s in TEXTURE_SIZES], width=6, state="readonly")
-        self.size_combo.set("16")
-        self.size_combo.pack(side="left", padx=(4, 14))
-        self.size_combo.bind("<<ComboboxSelected>>", lambda e: (self.size_var.set(int(self.size_combo.get())), self._update_preview()))
-        tk.Checkbutton(sr, text="Сохранять альфа-канал", variable=self.keep_alpha, bg=BG, fg=TEXT, selectcolor=SURFACE, activebackground=BG, command=self._update_preview).pack(side="left")
-        pr = tk.Frame(p, bg=BG)
-        pr.pack(fill="x", pady=6)
-        ttk.Button(pr, text="Выбрать фото", command=self._browse_img).pack(side="left")
-        self.photo_lbl = tk.Label(pr, text="Файл не выбран", bg=BG, fg=SUBTEXT, font=("Segoe UI", 9))
+
+        self.orig_lbl, self.orig_sz = card(prev, "1. Оригинал из игры", "Выберите в списке слева")
+        
+        arrow = tk.Label(prev, text="➡️", bg=BG, fg=ACCENT, font=("Segoe UI", 18))
+        arrow.pack(side="left", padx=6)
+        
+        self.res_lbl, self.res_sz = card(prev, "2. Ваша картинка", "Нажмите для выбора фото", click_fn=self._browse_img)
+
+        # Prominent Action Bar (Steps 1 & 2)
+        act = tk.Frame(p, bg=SURFACE, padx=10, pady=8, highlightthickness=1, highlightbackground="#45475a")
+        act.pack(fill="x", pady=(0, 6))
+
+        btn_browse = tk.Button(
+            act, text="📷 Шаг 1: Выбрать фото (миньона / любое)...",
+            bg=ACCENT, fg="#1e1e2e", activebackground="#b4befe",
+            font=("Segoe UI", 10, "bold"), relief="flat", padx=12, pady=6, cursor="hand2",
+            command=self._browse_img
+        )
+        btn_browse.pack(side="left")
+
+        self.photo_lbl = tk.Label(act, text="Файл не выбран", bg=SURFACE, fg=SUBTEXT, font=("Segoe UI", 9))
         self.photo_lbl.pack(side="left", padx=10)
-        ttk.Button(p, text="Добавить замену", command=self._add).pack(fill="x", pady=4)
+
+        btn_add = tk.Button(
+            act, text="➕ Шаг 2: Добавить замену",
+            bg=SUCCESS, fg="#1e1e2e", activebackground="#94e2d5",
+            font=("Segoe UI", 10, "bold"), relief="flat", padx=14, pady=6, cursor="hand2",
+            command=self._add
+        )
+        btn_add.pack(side="right")
+
+        # Settings row (compact)
+        sf = tk.Frame(p, bg=BG)
+        sf.pack(fill="x", pady=(0, 6))
+        tk.Label(sf, text="Масштаб:", bg=BG, fg=SUBTEXT, font=("Segoe UI", 9)).pack(side="left")
+        for txt, val in [("Fill (заполнить)", "fill"), ("Fit (вписать)", "fit"), ("Stretch (растянуть)", "stretch")]:
+            tk.Radiobutton(sf, text=txt, variable=self.fit_mode, value=val, bg=BG, fg=TEXT,
+                           selectcolor=SURFACE, activebackground=BG, command=self._update_preview).pack(side="left", padx=4)
+        
+        tk.Label(sf, text="Размер:", bg=BG, fg=SUBTEXT, font=("Segoe UI", 9)).pack(side="left", padx=(10, 4))
+        self.size_combo = ttk.Combobox(sf, values=[str(s) for s in TEXTURE_SIZES], width=5, state="readonly")
+        self.size_combo.set("16")
+        self.size_combo.pack(side="left", padx=(0, 10))
+        self.size_combo.bind("<<ComboboxSelected>>", lambda e: (self.size_var.set(int(self.size_combo.get())), self._update_preview()))
+        
+        tk.Checkbutton(sf, text="Прозрачность (альфа)", variable=self.keep_alpha, bg=BG, fg=TEXT,
+                       selectcolor=SURFACE, activebackground=BG, command=self._update_preview).pack(side="left")
+
+        # Planned Replacements Table
         rf = ttk.LabelFrame(p, text=" Запланированные замены ")
-        rf.pack(fill="both", expand=True, pady=4)
+        rf.pack(fill="both", expand=True, pady=(0, 4))
         cols = ("texture", "photo", "mode", "size")
-        self.rep_tree = ttk.Treeview(rf, columns=cols, show="headings", height=6)
-        for col, hd, w in zip(cols, ["Текстура", "Фото", "Режим", "Размер"], [240, 150, 80, 60]):
+        self.rep_tree = ttk.Treeview(rf, columns=cols, show="headings", height=4)
+        for col, hd, w in zip(cols, ["Текстура в игре", "Ваше фото", "Режим", "Размер"], [200, 140, 70, 60]):
             self.rep_tree.heading(col, text=hd)
             self.rep_tree.column(col, width=w, anchor="w")
         rsb = ttk.Scrollbar(rf, command=self.rep_tree.yview)
         self.rep_tree.configure(yscrollcommand=rsb.set)
         self.rep_tree.pack(side="left", fill="both", expand=True)
         rsb.pack(side="right", fill="y")
-        ttk.Button(p, text="Удалить выбранное", command=self._remove).pack(fill="x")
+        
+        tk.Button(p, text="🗑 Удалить выбранную замену из списка", bg=SURFACE, fg=TEXT,
+                  activebackground="#f38ba8", activeforeground="#1e1e2e",
+                  font=("Segoe UI", 8), relief="flat", pady=2, cursor="hand2",
+                  command=self._remove).pack(fill="x")
 
     def _load_jars(self):
         jars = find_mc_jars(Path(self.mc_path_var.get()))
@@ -550,16 +623,20 @@ class TextureTab(tk.Frame):
             self.orig_lbl.configure(image=ph)
             self._orig_ph = ph
             self.orig_sz.config(text=f"{orig.width}x{orig.height}")
-            self.size_var.set(orig.width)
-            self.size_combo.set(str(orig.width) if orig.width in TEXTURE_SIZES else "16")
+            if orig.width in TEXTURE_SIZES:
+                self.size_var.set(orig.width)
+                self.size_combo.set(str(orig.width))
         self._update_preview()
 
     def _browse_img(self):
-        p = filedialog.askopenfilename(title="Выберите фото", filetypes=[("Изображения", "*.png *.jpg *.jpeg *.bmp *.gif *.webp *.tiff")])
+        p = filedialog.askopenfilename(
+            title="Выберите фото (например, миньона)",
+            filetypes=[("Изображения", "*.png *.jpg *.jpeg *.bmp *.gif *.webp *.tiff"), ("Все файлы", "*.*")]
+        )
         if p:
             self.user_image_path = p
             short = Path(p).name
-            self.photo_lbl.config(text=(short[:36]+"...") if len(short)>38 else short, fg=SUCCESS)
+            self.photo_lbl.config(text=(short[:32]+"...") if len(short)>34 else short, fg=SUCCESS)
             self._update_preview()
 
     def _update_preview(self, *_):
@@ -570,23 +647,35 @@ class TextureTab(tk.Frame):
             ph = ImageTk.PhotoImage(r.resize((128, 128), Image.NEAREST))
             self.res_lbl.configure(image=ph)
             self._res_ph = ph
-            self.res_sz.config(text=f"{sz}x{sz}")
+            self.res_sz.config(text=f"{sz}x{sz} (нажмите для смены)")
         except Exception as e:
             self.set_status(f"Ошибка превью: {e}", err=True)
 
     def _add(self):
         if not self.selected_texture:
-            messagebox.showwarning("Нет текстуры", "Выберите текстуру.")
+            messagebox.showwarning("Нет текстуры", "1. Сначала выберите текстуру в списке слева (например, totem_of_undying.png).")
             return
         if not self.user_image_path:
-            messagebox.showwarning("Нет фото", "Выберите фото.")
+            messagebox.showwarning("Нет фото", "2. Нажмите кнопку «📷 Шаг 1: Выбрать фото» и укажите картинку (миньона).")
             return
         sz   = self.size_var.get()
         mode = self.fit_mode.get()
         img  = process_image(self.user_image_path, (sz, sz), mode, self.keep_alpha.get())
+        
+        # If this texture was already added, update it
+        for i, existing in enumerate(self.replacements):
+            if existing["mc_path"] == self.selected_texture:
+                self.replacements[i] = {"mc_path": self.selected_texture, "image": img}
+                for item in self.rep_tree.get_children():
+                    if self.rep_tree.item(item, "values")[0] == Path(self.selected_texture).name:
+                        self.rep_tree.item(item, values=(Path(self.selected_texture).name, Path(self.user_image_path).name, mode, f"{sz}px"))
+                        break
+                self.set_status(f"Обновлено: {Path(self.selected_texture).name}")
+                return
+
         self.replacements.append({"mc_path": self.selected_texture, "image": img})
         self.rep_tree.insert("", "end", values=(Path(self.selected_texture).name, Path(self.user_image_path).name, mode, f"{sz}px"))
-        self.set_status(f"Добавлено: {Path(self.selected_texture).name}")
+        self.set_status(f"Добавлено в список: {Path(self.selected_texture).name}")
 
     def _remove(self):
         sel = self.rep_tree.selection()
@@ -598,7 +687,16 @@ class TextureTab(tk.Frame):
 
     def _check(self):
         if not self.replacements:
-            messagebox.showwarning("Пусто", "Добавьте хотя бы одну замену.")
+            # Auto-add if user already selected texture and photo
+            if self.selected_texture and self.user_image_path:
+                self._add()
+                return True
+            messagebox.showwarning(
+                "Нет замен",
+                "Инструкция:\n1. Выберите текстуру слева (например, totem_of_undying.png)\n"
+                "2. Нажмите «Шаг 1: Выбрать фото» (укажите картинку миньона)\n"
+                "3. Нажмите «Шаг 2: Добавить замену»"
+            )
             return False
         return True
 
@@ -625,13 +723,22 @@ class TextureTab(tk.Frame):
         if not self._check(): return
         mc = Path(self.mc_path_var.get())
         if not mc.exists():
-            messagebox.showerror("Ошибка", f".minecraft не найдена:\n{mc}")
+            messagebox.showerror("Ошибка", f"Папка .minecraft не найдена:\n{mc}")
             return
         with tempfile.TemporaryDirectory() as tmp:
             pd   = build_pack(Path(tmp) / self.pack_name.get(), self.replacements)
             dest = install_pack(pd, mc)
-        self.set_status(f"Установлено: {dest}")
-        messagebox.showinfo("Установлено!", f"Установлено в:\n{dest}\n\nНастройки > Пакеты ресурсов > выберите пак")
+        self.set_status(f"Установлено в Minecraft: {dest.name}")
+        messagebox.showinfo(
+            "Готово! Текстуры установлены",
+            f"Ресурспак «{self.pack_name.get()}» успешно добавлен в Minecraft!\n\n"
+            f"Как включить в игре:\n"
+            f"1. Откройте Minecraft\n"
+            f"2. Настройки -> Наборы ресурсов (Resource Packs)\n"
+            f"3. Нажмите стрелочку на «{self.pack_name.get()}», чтобы переместить его вправо\n"
+            f"4. Нажмите «Готово»!\n\n"
+            f"(Если игра уже запущена, нажмите сочетание F3 + T для мгновенной перезагрузки текстур)"
+        )
 
 # ── Tab 2: Browse Packs (Minecraft-Inside.ru & MinecraftExpert.ru) ────────────
 class BrowseTab(tk.Frame):
