@@ -1,4 +1,4 @@
-﻿"""
+"""
 Minecraft Texture Replacer v2.7
 =================================
 Tab 1 - Replace textures with your own photos
@@ -140,27 +140,51 @@ def process_image(src, size, mode="fill", keep_alpha=True):
 
 def build_pack(pack_dir, replacements, desc="MC Texture Replacer"):
     pack_dir.mkdir(parents=True, exist_ok=True)
+    meta = {
+        "pack": {
+            "pack_format": 34,
+            "supported_formats": [1, 99],
+            "description": desc
+        }
+    }
     with open(pack_dir / "pack.mcmeta", "w", encoding="utf-8") as f:
-        json.dump({"pack": {"pack_format": 34, "description": desc}}, f, indent=2)
+        json.dump(meta, f, indent=2)
+    # Generate pack.png icon from replacement image
+    if replacements and "image" in replacements[0]:
+        try:
+            icon = replacements[0]["image"].resize((128, 128), Image.LANCZOS)
+            icon.save(pack_dir / "pack.png", "PNG")
+        except Exception:
+            pass
     for r in replacements:
         dest = pack_dir / Path(r["mc_path"])
         dest.parent.mkdir(parents=True, exist_ok=True)
         r["image"].save(dest, "PNG")
     return pack_dir
 
-def zip_pack(pack_dir):
-    zp = pack_dir.with_suffix(".zip")
+def zip_pack(pack_dir, out_zip=None):
+    zp = out_zip if out_zip else pack_dir.with_suffix(".zip")
     with zipfile.ZipFile(zp, "w", zipfile.ZIP_DEFLATED) as zf:
         for f in pack_dir.rglob("*"):
-            zf.write(f, f.relative_to(pack_dir.parent))
+            if f.is_file():
+                zf.write(f, f.relative_to(pack_dir))
     return zp
 
 def install_pack(pack_dir, mc):
-    dest = mc / "resourcepacks" / pack_dir.name
-    if dest.exists():
-        shutil.rmtree(dest)
-    shutil.copytree(pack_dir, dest)
-    return dest
+    rp = mc / "resourcepacks"
+    rp.mkdir(parents=True, exist_ok=True)
+    # 1. Install as ZIP archive with pack.mcmeta at root
+    zip_dest = rp / f"{pack_dir.name}.zip"
+    zip_pack(pack_dir, zip_dest)
+    # 2. Also install as unpacked folder for maximum launcher compatibility
+    folder_dest = rp / pack_dir.name
+    if folder_dest.exists():
+        shutil.rmtree(folder_dest, ignore_errors=True)
+    try:
+        shutil.copytree(pack_dir, folder_dest)
+    except Exception:
+        pass
+    return zip_dest
 
 # ── Scrapers ──────────────────────────────────────────────────────────────────
 def fetch_html(url, retries=2):
@@ -382,6 +406,7 @@ class TextureTab(tk.Frame):
         self._orig_ph = None
         self._res_ph  = None
         self._build()
+        self.after(300, self._load_jars)
 
     def _build(self):
         ctrl = tk.Frame(self, bg=BG, pady=6)
