@@ -1,70 +1,99 @@
-﻿# Minecraft Texture Replacer v2.1
+# Minecraft Texture & Shader Manager v3.1
 
-Replace Minecraft textures with your photos, or browse packs from minecraft-inside.ru.
-
----
-
-## Option A — Standalone EXE (no Python needed for end users)
-
-### How to BUILD the .exe (one-time, requires Python on YOUR machine)
-
-1. Double-click **`build.bat`**
-2. Wait 1-3 minutes while PyInstaller bundles everything
-3. Find **`dist\MCTextureReplacer.exe`**
-4. Share that single `.exe` file — recipients need NO Python!
-
-> The EXE contains Python + Pillow + requests + beautifulsoup4 inside.
-> File size will be ~30-60 MB (normal for bundled Python apps).
+Создание ресурс-паков со своими картинками, установка избранных текстур-паков с GitHub, интеграция с личным репозиторием и каталог шейдеров с установкой в 1 клик.
 
 ---
 
-## Option B — Run with Python (auto-installs deps)
+## Возможности приложения
 
-If you have Python 3.10+:
-
-1. Double-click **`run.bat`** — OR run `python app.py`
-2. On first launch: a splash window appears and auto-installs packages
-3. App opens automatically when ready
-
----
-
-## Features
-
-### Tab 1 – My Photos
-Replace any texture from your installed Minecraft version with your own photo.
-
-| Step | Action |
-|------|--------|
-| 1 | Click **Load versions** to detect MC versions |
-| 2 | Pick category (Blocks, Items, Entities...) or search |
-| 3 | Click a texture — see original preview |
-| 4 | Click **Choose photo** — any JPG/PNG/BMP/WEBP |
-| 5 | Adjust resize mode and size, preview updates instantly |
-| 6 | Click **Add replacement** — repeat for more textures |
-| 7 | Export: **Save Folder** / **Save ZIP** / **Install to MC** |
-
-### Tab 2 – Browse Packs (minecraft-inside.ru)
-Browse, preview, and download texture packs directly from minecraft-inside.ru.
-
-| Feature | Details |
-|---------|---------|
-| Thumbnail grid | Auto-loads pack preview images |
-| Categories | All / PvP / Realistic / 3D / Modern / Medieval / Cartoon / FPS |
-| Search | Searches minecraft-inside.ru |
-| Pagination | Prev / Next buttons |
-| Screenshot gallery | Scroll horizontally, click to open full-size |
-| Download | Click version button → choose folder → progress bar |
+### Вкладка 1 – ✏️ Заменить на свои фото
+Быстрая замена любой текстуры из игры на вашу картинку или фото (например, тотем бессмертия на миньона, алмазный меч на лазерный меч и т.д.):
+1. Выберите текстуру из каталога слева (например, `totem_of_undying.png`).
+2. Нажмите «📷 Шаг 1: Выбрать фото» и укажите картинку.
+3. Нажмите «➕ Шаг 2: Добавить замену».
+4. Нажмите «⚡ Установить в Minecraft» — ресурс-пак мгновенно готов и появится в игре!
 
 ---
 
-## Activating a pack in Minecraft
-Options → Resource Packs → move pack to right column → Done
+### Вкладка 2 – ⭐ Избранное и Репозитории GitHub
+Два режима работы в одном месте:
 
-## Pack format numbers (for pack.mcmeta)
-| Version | Format |
-|---------|--------|
-| 1.21+   | 34 |
-| 1.20.x  | 22 |
-| 1.19.x  | 13 |
-| 1.18.x  | 8  |
-| 1.17.x  | 7  |
+#### 1. Режим «⭐ Избранные паки GitHub»:
+- Подборка проверенных и красивых текстур-паков:
+  - **Faithful 32x**: Улучшенная классика в высоком разрешении 32x32.
+  - **Default Dark Mode**: Стильный тёмный интерфейс и инвентари.
+  - **Golden Days**: Эстетика Minecraft Alpha & Beta.
+  - **CozyUI+**: Уютный современный HD интерфейс.
+  - **Plast-Pack**: PvP ресурс-пак с укороченными мечами и эффектами.
+  - **Modernity GTNH**: Текстуры руд и блоков в стиле Jappa.
+  - **Compliance 64x**: Ультра-детализированный ванильный пак 64x64.
+  - **Merged Damage Sounds**: Тот самый классический смачный звук урона («Oof!»).
+- Фильтры по категориям и поиск по названию.
+- Автоматический предпросмотр скриншотов и обложек с увеличением по клику.
+- Установка в 1 клик прямо в папку `.minecraft/resourcepacks`.
+
+#### 2. Режим «👤 Мой личный репозиторий GitHub»:
+- Автоматическое сканирование вашего GitHub репозитория на наличие файлов `.zip` и скриншотов `1.png` / `1.jpg`.
+- Кнопка создания нового релиза на GitHub.
+- Моментальная загрузка и установка ваших паков в игру.
+
+---
+
+### Вкладка 3 – ☀️ Шейдеры (Shaderpacks)
+Каталог лучших мировых шейдеров с предпросмотром, автоматической установкой и встроенным помощником по совместимости:
+
+#### Что входит в коллекцию:
+- **Complementary Reimagined** *(Ванильный стиль)* — Самый популярный шейдер в мире с мягким светом и чистой водой.
+- **MakeUp - Ultra Fast** *(Для слабых ПК / Ноутбуков)* — Ультра-оптимизированный шейдер для максимального FPS.
+- **BSL Shaders** *(Яркие и сочные)* — Сочные тёплые тона, кинематографичное солнце и реалистичные тени.
+- **Complementary Unbound** *(Реализм)* — Физически точное освещение и зеркальные отражения на воде.
+- **Photon Shaders** *(Кинематографичный)* — Объёмные 3D-облака и мягкие тени для комфортного выживания.
+- **Solas Shader** *(Фэнтези)* — Волшебное цветное освещение от факелов, фонарей и лавы.
+- **Bliss Shaders** *(Атмосферный)* — Реалистичные утренние туманы, живые облака и динамическая погода.
+- **AstraLex Shaders** *(Космос и эффекты)* — Полярное сияние, ночные созвездия, галактики и лучи.
+- **Nostalgia Shader** *(Ретро-стиль)* — Эстетика легендарных шейдеров 2012-2015 годов.
+- **Miniature Shader** *(Ультра-легкий)* — Микро-шейдер с тенями и отражениями практически без потери FPS.
+
+#### Особенности работы с шейдерами:
+- **Компактная плашка совместимости версий**: прямо над кнопкой «Установить» отображается предупреждение с поддерживаемыми версиями Minecraft (например, `⚠️ Требуется версия: MC 1.16 - 1.21+ (Iris / OptiFine)`) и уровнем нагрузки на ПК, а также кнопка вызова быстрой справки `❓ Инструкция`.
+- **Автоматическая установка в `.minecraft/shaderpacks`**: шейдеры скачиваются именно в папку шейдеров, а не ресурс-паков.
+- **Установка любого своего шейдера**: кнопка «📥 Установить свой шейдер (.ZIP) с ПК» позволяет за 1 клик добавить любой скачанный из интернета архив.
+- **Клик для увеличения обложки**: кликните по картинке любого шейдера, чтобы рассмотреть скриншот в полном размере.
+
+---
+
+## Требования для работы шейдеров в Minecraft
+
+Для того чтобы шейдеры отображались и работали в игре, требуется графический мод:
+1. **Iris Shaders** *(Рекомендуется для Fabric / NeoForge)*:
+   - Максимальный FPS и полная поддержка современных видеокарт.
+   - Устанавливается в 1 клик в лаунчерах (TLauncher, Prism Launcher, Modrinth, CurseForge).
+2. **OptiFine** *(Для Forge / Vanilla)*:
+   - Классический мод со встроенной вкладкой шейдеров.
+3. **Oculus** *(Для Forge / NeoForge)*:
+   - Порт Iris для загрузчика Forge.
+
+### Как включить шейдер в игре:
+1. Запустите Minecraft с Iris или OptiFine.
+2. Перейдите в: **Настройки** ➔ **Настройки графики** ➔ **Наборы шейдеров (Shader Packs)**.
+3. Выберите скачанный шейдер и нажмите **«Применить»**!
+
+---
+
+## Запуск приложения
+
+- **Запуск через Python**: запустите файл `run.bat` (или команду `python app.py`).
+- **Сборка в один EXE-файл**: запустите `build.bat` — готовая автономная программа будет собрана в `dist\MCTextureReplacer.exe`.
+
+---
+
+## Таблица совместимости форматов ресурс-паков (pack.mcmeta)
+| Версия Minecraft | pack_format |
+| :--- | :---: |
+| **1.21+** | 34 |
+| **1.20.x** | 22 |
+| **1.19.x** | 13 |
+| **1.18.x** | 8 |
+| **1.17.x** | 7 |
+| **1.16.x** | 6 |
+| **1.12.x** | 3 |

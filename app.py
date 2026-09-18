@@ -1,8 +1,9 @@
 """
-Minecraft Texture Replacer v3.0
-=================================
+Minecraft Texture & Shader Manager v3.1
+=======================================
 Tab 1 - Replace textures with your own photos (Totem, Grass, etc.)
-Tab 2 - Download texture packs from GitHub with 1.png / 1.jpg screenshot preview
+Tab 2 - Download texture packs from GitHub with screenshot preview
+Tab 3 - Download & install shaders (Shaderpacks) with version warning & Iris/OptiFine guide
 """
 
 import sys, subprocess, importlib
@@ -1769,12 +1770,596 @@ class GitHubTab(tk.Frame):
         except Exception as e:
             messagebox.showerror("Ошибка копирования", str(e))
 
+# ── Curated Shaders Collection ────────────────────────────────────────────────
+CURATED_SHADER_CATEGORIES = [
+    "Все шейдеры",
+    "⚡ Для слабых ПК (Высокий FPS)",
+    "💎 Ванильный стиль",
+    "🌊 Реализм и вода",
+    "🎨 Яркие и сочные",
+    "🎬 Кинематографичные",
+    "✨ Фэнтези и магия",
+    "🌌 Космос и эффекты",
+    "⏳ Ретро-шейдеры"
+]
+
+CURATED_SHADERS = [
+    {
+        "name": "Complementary Reimagined",
+        "category": "💎 Ванильный стиль",
+        "size": "0.5 MB",
+        "versions": "MC 1.7.2 - 1.21+ (Iris / OptiFine)",
+        "performance": "🟡 Средняя нагрузка (Оптимальный баланс)",
+        "url": "https://cdn.modrinth.com/data/HVnmMxH1/versions/Bqen1mJX/ComplementaryReimagined_r5.9.3.zip",
+        "image_url": "https://cdn.modrinth.com/data/HVnmMxH1/79cb7c8123bbc54945305b2ebad6b8881efdf5f8_96.webp",
+        "desc": "Самый знаменитый и популярный шейдер в мире! Идеально сохраняет ванильный дух Minecraft, добавляя превосходное мягкое освещение, чистую воду, тени и красивый солнечный свет."
+    },
+    {
+        "name": "MakeUp - Ultra Fast",
+        "category": "⚡ Для слабых ПК (Высокий FPS)",
+        "size": "0.4 MB",
+        "versions": "MC 1.12 - 1.21+ (Iris / OptiFine)",
+        "performance": "🟢 Минимальная нагрузка (Максимальный FPS)",
+        "url": "https://cdn.modrinth.com/data/izsIPI7a/versions/T3EhqZo1/MakeUp-UltraFast-9.5e.zip",
+        "image_url": "https://cdn.modrinth.com/data/izsIPI7a/a08432baa86b8ffd58c08f4b3a001ef976ff764d_96.webp",
+        "desc": "Специальный ультра-быстрый шейдер для слабых компьютеров и ноутбуков! Позволяет получить реалистичные тени, покачивание травы и красивую воду без просадки FPS."
+    },
+    {
+        "name": "BSL Shaders",
+        "category": "🎨 Яркие и сочные",
+        "size": "1.1 MB",
+        "versions": "MC 1.7.2 - 1.21+ (Iris / OptiFine)",
+        "performance": "🟡 Средняя нагрузка (Отличная оптимизация)",
+        "url": "https://cdn.modrinth.com/data/Q1vvjJYV/versions/yFTiE1Nc/BSL_v10.1.5.zip",
+        "image_url": "https://cdn.modrinth.com/data/Q1vvjJYV/2a611a3cb434fb52fb81fa5dace13c5d8b67e55d_96.webp",
+        "desc": "Легендарный шейдер-пак с сочными тёплыми красками, реалистичной прозрачной водой, динамическим туманом и мягким солнечным светом."
+    },
+    {
+        "name": "Complementary Unbound",
+        "category": "🌊 Реализм и вода",
+        "size": "0.5 MB",
+        "versions": "MC 1.7.2 - 1.21+ (Iris / OptiFine)",
+        "performance": "🔴 Высокая нагрузка (Ультра-реализм)",
+        "url": "https://cdn.modrinth.com/data/R6NEzAwj/versions/B1kyfoUZ/ComplementaryUnbound_r5.9.3.zip",
+        "image_url": "https://cdn.modrinth.com/data/R6NEzAwj/c85ce4049aac76360d2cd24fd9a7003de01ef312_96.webp",
+        "desc": "Версия Complementary для любителей максимального реализма: физически корректное освещение, зеркальные отражения на воде и блоках, реалистичные волны."
+    },
+    {
+        "name": "Photon Shaders",
+        "category": "🎬 Кинематографичные",
+        "size": "3.6 MB",
+        "versions": "MC 1.16.5 - 1.21+ (Iris / OptiFine)",
+        "performance": "🟡 Средне-высокая нагрузка",
+        "url": "https://cdn.modrinth.com/data/lLqFfGNs/versions/gUv7fBPN/photon_v1.3b.zip",
+        "image_url": "https://cdn.modrinth.com/data/lLqFfGNs/39cb5f12e7dcc68d6cb666f225fcb2b801dd70fb_96.webp",
+        "desc": "Современный полуреалистичный шейдер, созданный специально для комфортного выживания. Объёмные 3D-облака, мягкие тени и кинематографичная цветокоррекция."
+    },
+    {
+        "name": "Solas Shader",
+        "category": "✨ Фэнтези и магия",
+        "size": "1.2 MB",
+        "versions": "MC 1.16.5 - 1.21+ (Iris / OptiFine)",
+        "performance": "🟡 Средняя нагрузка",
+        "url": "https://cdn.modrinth.com/data/EpQFjzrQ/versions/KcfQaN5J/Solas%20Shader%20V3.7b.zip",
+        "image_url": "https://cdn.modrinth.com/data/EpQFjzrQ/e3efc6ba7a63f9e1cf473a794d0224a6daf243c7_96.webp",
+        "desc": "Фэнтезийный шейдер с потрясающим цветным освещением! Факелы, лава, светящиеся ягоды и зелья озаряют пещеры и постройки волшебными оттенками."
+    },
+    {
+        "name": "Bliss Shaders",
+        "category": "🎬 Кинематографичные",
+        "size": "1.7 MB",
+        "versions": "MC 1.16.5 - 1.21+ (Iris / Oculus)",
+        "performance": "🟡 Средняя нагрузка",
+        "url": "https://cdn.modrinth.com/data/ZvMtQlho/versions/kC2Y8q1P/Bliss_v2.1.2_%28Chocapic13_Shaders_edit%29.zip",
+        "image_url": "https://cdn.modrinth.com/data/ZvMtQlho/90145c971ea24387775108fc86c89bed9bd2c8f1_96.webp",
+        "desc": "Невероятно атмосферный шейдер с динамической погодой: густые утренние туманы в низинах, реалистичные грозы и живые закаты."
+    },
+    {
+        "name": "AstraLex Shaders",
+        "category": "🌌 Космос и эффекты",
+        "size": "3.0 MB",
+        "versions": "MC 1.14 - 1.21+ (Iris / OptiFine)",
+        "performance": "🔴 Высокая нагрузка (Множество эффектов)",
+        "url": "https://cdn.modrinth.com/data/RphJSnEs/versions/qSbtQS2o/%C2%A7r%C2%A7lAstra%C2%A74%C2%A7lLex%C2%A7r%C2%A7l_By_LexBoosT_%C2%A74%C2%A7lV93.0%C2%A7r%C2%A7l.zip",
+        "image_url": "https://cdn.modrinth.com/data/RphJSnEs/3e25ea407447bf2ff8ffa8926cd2db295307cf68_96.webp",
+        "desc": "Шейдер с потрясающим ночным небом: северное полярное сияние, яркие созвездия, галактики, падающие звёзды и кинематографичные лучи солнца."
+    },
+    {
+        "name": "Nostalgia Shader",
+        "category": "⏳ Ретро-шейдеры",
+        "size": "1.8 MB",
+        "versions": "MC 1.14 - 1.21+ (Iris / OptiFine)",
+        "performance": "🟡 Средняя нагрузка",
+        "url": "https://cdn.modrinth.com/data/xEItlMn3/versions/fzxeGgx7/Nostalgia_v5.1.zip",
+        "image_url": "https://cdn.modrinth.com/data/xEItlMn3/49ba53348dd4902ad2a3ae49cc643550ead201bc.png",
+        "desc": "Воссоздаёт тёплую и уютную визуальную атмосферу первых классических шейдеров 2012-2015 годов на современном движке."
+    },
+    {
+        "name": "Miniature Shader",
+        "category": "⚡ Для слабых ПК (Высокий FPS)",
+        "size": "0.1 MB",
+        "versions": "MC 1.12 - 1.21+ (Iris / OptiFine)",
+        "performance": "🟢 Ультра-легкий (Работает везде)",
+        "url": "https://cdn.modrinth.com/data/UaS8ROxa/versions/LWmZ94RG/miniature-shader-2.19.zip",
+        "image_url": "https://cdn.modrinth.com/data/UaS8ROxa/85f373314addaf840d9c8667c797da6e0f7e7034_96.webp",
+        "desc": "Минималистичный микро-шейдер. Добавляет аккуратные тени и отражения на воде практически без потери кадров в секунду."
+    }
+]
+
+# ── Tab 3: Shaderpacks ────────────────────────────────────────────────────────
+class ShaderTab(tk.Frame):
+    def __init__(self, parent, mc_path_var, status_fn):
+        super().__init__(parent, bg=BG)
+        self.mc_path_var = mc_path_var
+        self.set_status = status_fn
+
+        self._displayed_shaders = []
+        self._is_downloading = False
+        self._selected_shader = None
+        self._preview_id = 0
+        self._current_screenshot_ph = None
+        self._full_screenshot_pil = None
+
+        self._build()
+        self.after(150, self._filter_shaders)
+
+    def _build(self):
+        # 1. Header Banner
+        hdr = tk.Frame(self, bg=SURFACE, padx=16, pady=9)
+        hdr.pack(fill="x", padx=14, pady=(10, 8))
+
+        tk.Label(
+            hdr, text="☀️ Шейдеры для Minecraft (Shaderpacks)",
+            bg=SURFACE, fg=ACCENT, font=("Segoe UI", 13, "bold")
+        ).pack(anchor="w")
+
+        tk.Label(
+            hdr,
+            text="Коллекция лучших мировых шейдеров. Добавляют реалистичное освещение, тени, живую воду и солнце.\n"
+                 "Скачиваются и устанавливаются в папку «.minecraft/shaderpacks» в 1 клик!",
+            bg=SURFACE, fg=TEXT, font=("Segoe UI", 9), justify="left"
+        ).pack(anchor="w", pady=(2, 0))
+
+        # 2. Filter & Actions Toolbar
+        bar = tk.Frame(self, bg=SURFACE, padx=12, pady=7, highlightthickness=1, highlightbackground="#45475a")
+        bar.pack(fill="x", padx=14, pady=(0, 8))
+
+        tk.Label(bar, text="Категория:", bg=SURFACE, fg=ACCENT, font=("Segoe UI", 9, "bold")).pack(side="left")
+        self.cat_var = tk.StringVar(value="Все шейдеры")
+        self.cat_cb = ttk.Combobox(bar, textvariable=self.cat_var, values=CURATED_SHADER_CATEGORIES, state="readonly", width=25)
+        self.cat_cb.pack(side="left", padx=(6, 12))
+        self.cat_cb.bind("<<ComboboxSelected>>", self._filter_shaders)
+
+        tk.Label(bar, text="Поиск:", bg=SURFACE, fg=SUBTEXT, font=("Segoe UI", 9)).pack(side="left")
+        self.search_var = tk.StringVar()
+        s_ent = tk.Entry(bar, textvariable=self.search_var, width=20, bg=BG, fg=TEXT, insertbackground=TEXT, relief="flat", font=("Segoe UI", 9))
+        s_ent.pack(side="left", padx=(6, 6))
+        s_ent.bind("<KeyRelease>", self._filter_shaders)
+
+        btn_clear = tk.Button(
+            bar, text="✕", bg="#313244", fg=SUBTEXT, activebackground="#45475a",
+            font=("Segoe UI", 8, "bold"), relief="flat", padx=6, pady=2, cursor="hand2",
+            command=self._clear_search
+        )
+        btn_clear.pack(side="left", padx=(0, 10))
+
+        btn_local = tk.Button(
+            bar, text="📥 Установить свой шейдер (.ZIP) с ПК", bg=SUCCESS, fg="#1e1e2e", activebackground="#94e2d5",
+            font=("Segoe UI", 9, "bold"), relief="flat", padx=12, pady=4, cursor="hand2", command=self._install_local_zip
+        )
+        btn_local.pack(side="right")
+
+        # 3. Main Workspace Split (Table on Left, Preview Card on Right)
+        paned = tk.PanedWindow(self, orient="horizontal", bg=BG, sashwidth=6, sashrelief="flat")
+        paned.pack(fill="both", expand=True, padx=14, pady=(0, 6))
+
+        # Left Frame: Table
+        self.left_frame = ttk.LabelFrame(paned, text=" Каталог шейдеров ")
+        paned.add(self.left_frame, minsize=380, width=530)
+
+        cols = ("col1", "col2", "col3")
+        self.pack_tree = ttk.Treeview(self.left_frame, columns=cols, show="headings", height=10)
+        self.pack_tree.heading("col1", text="Название шейдера")
+        self.pack_tree.heading("col2", text="Категория")
+        self.pack_tree.heading("col3", text="Размер")
+        self.pack_tree.column("col1", width=230, anchor="w")
+        self.pack_tree.column("col2", width=160, anchor="w")
+        self.pack_tree.column("col3", width=80, anchor="center")
+
+        sb = ttk.Scrollbar(self.left_frame, command=self.pack_tree.yview)
+        self.pack_tree.configure(yscrollcommand=sb.set)
+        self.pack_tree.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
+
+        self.pack_tree.bind("<<TreeviewSelect>>", self._on_shader_select)
+        self.pack_tree.bind("<ButtonRelease-1>", self._on_shader_select)
+        self.pack_tree.bind("<Double-1>", lambda e: self._download_selected())
+
+        # Right Frame: Preview Card
+        self.right_frame = ttk.LabelFrame(paned, text=" Предпросмотр и параметры шейдера ")
+        paned.add(self.right_frame, minsize=430)
+
+        card_inner = tk.Frame(self.right_frame, bg=SURFACE, padx=14, pady=10)
+        card_inner.pack(fill="both", expand=True)
+
+        self.card_title = tk.Label(
+            card_inner, text="Выберите шейдер слева", bg=SURFACE, fg=ACCENT,
+            font=("Segoe UI", 12, "bold"), wraplength=410, justify="left"
+        )
+        self.card_title.pack(anchor="w")
+
+        self.card_meta = tk.Label(
+            card_inner, text="Размер: --  •  Категория: --", bg=SURFACE, fg=SUBTEXT,
+            font=("Segoe UI", 9)
+        )
+        self.card_meta.pack(anchor="w", pady=(2, 8))
+
+        # Screenshot display box (360x190)
+        img_box = tk.Frame(card_inner, width=360, height=190, bg="#242638", highlightthickness=1, highlightbackground="#45475a")
+        img_box.pack_propagate(False)
+        img_box.pack(pady=(0, 4))
+
+        self.card_img_lbl = tk.Label(
+            img_box, bg="#242638", fg=SUBTEXT, font=("Segoe UI", 10), justify="center", wraplength=320, cursor="hand2",
+            text="☀️ Выберите шейдер слева\n\nЗдесь появится обложка"
+        )
+        self.card_img_lbl.pack(fill="both", expand=True)
+        self.card_img_lbl.bind("<Button-1>", lambda e: self._on_screenshot_click())
+        img_box.bind("<Button-1>", lambda e: self._on_screenshot_click())
+
+        self.card_hint_lbl = tk.Label(
+            card_inner, text="Кликните на обложку, чтобы увеличить", bg=SURFACE, fg=SUBTEXT,
+            font=("Segoe UI", 8)
+        )
+        self.card_hint_lbl.pack(pady=(0, 6))
+
+        # Description text
+        desc_box = tk.Frame(card_inner, bg=SURFACE)
+        desc_box.pack(fill="x", pady=(0, 6))
+        self.card_desc = tk.Text(
+            desc_box, height=3, bg=BG, fg=TEXT, font=("Segoe UI", 9),
+            relief="flat", wrap="word", state="disabled", padx=8, pady=6
+        )
+        self.card_desc.pack(fill="x")
+
+        # ── COMPACT COMPATIBILITY & VERSION WARNING BADGE (Right by the install button) ──
+        self.compat_box = tk.Frame(card_inner, bg="#2d2a1d", padx=10, pady=6, highlightthickness=1, highlightbackground="#fab387")
+        self.compat_box.pack(fill="x", pady=(0, 6))
+
+        self.compat_lbl = tk.Label(
+            self.compat_box,
+            text="⚠️ Требуется версия: Minecraft 1.16 - 1.21+ (Iris / OptiFine)\n⚡ Для работы шейдеров необходим графический мод",
+            bg="#2d2a1d", fg="#fab387", font=("Segoe UI", 9, "bold"), justify="left"
+        )
+        self.compat_lbl.pack(side="left", fill="x", expand=True)
+
+        self.btn_help = tk.Button(
+            self.compat_box, text="❓ Инструкция", bg="#45475a", fg=TEXT, activebackground="#585b70",
+            font=("Segoe UI", 8, "bold"), relief="flat", padx=8, pady=3, cursor="hand2",
+            command=self._show_iris_guide
+        )
+        self.btn_help.pack(side="right")
+
+        # Action buttons
+        btn_row = tk.Frame(card_inner, bg=SURFACE)
+        btn_row.pack(fill="x", pady=(2, 0))
+
+        self.btn_download = tk.Button(
+            btn_row, text="⚡ Скачать и установить в shaderpacks",
+            bg=SUCCESS, fg="#1e1e2e", activebackground="#94e2d5",
+            font=("Segoe UI", 10, "bold"), relief="flat", padx=14, pady=6, cursor="hand2",
+            state="disabled", command=self._download_selected
+        )
+        self.btn_download.pack(side="left", fill="x", expand=True, padx=(0, 6))
+
+        self.btn_download_other = tk.Button(
+            btn_row, text="📁 В другую папку...", bg="#45475a", fg=TEXT, activebackground="#585b70",
+            font=("Segoe UI", 9), relief="flat", padx=10, pady=6, cursor="hand2",
+            state="disabled", command=self._download_selected_other
+        )
+        self.btn_download_other.pack(side="left")
+
+        # 4. Progress Card
+        self.prog_card = tk.Frame(self, bg=SURFACE, padx=16, pady=6)
+        self.prog_card.pack(fill="x", padx=14, pady=(0, 6))
+
+        self.prog_var = tk.DoubleVar()
+        self.prog_bar = ttk.Progressbar(self.prog_card, variable=self.prog_var, maximum=100)
+        self.prog_bar.pack(fill="x", pady=(0, 2))
+
+        self.prog_lbl = tk.Label(self.prog_card, text="Выберите шейдер в таблице и нажмите кнопку установки.", bg=SURFACE, fg=SUBTEXT, font=("Segoe UI", 9))
+        self.prog_lbl.pack(anchor="w")
+
+        # 5. Bottom Instruction / Tip Card
+        self.tip_frame = tk.Frame(self, bg="#242638", padx=14, pady=8, highlightthickness=1, highlightbackground="#45475a")
+        self.tip_frame.pack(fill="x", padx=14, pady=(0, 8))
+        self.tip_lbl = tk.Label(
+            self.tip_frame,
+            text="💡 Куда устанавливаются шейдеры: файлы .zip помещаются в папку «.minecraft/shaderpacks».\n"
+                 "Для включения в игре: Настройки ➔ Настройки графики ➔ Наборы шейдеров (Shader Packs) ➔ Выберите шейдер и нажмите «Применить».",
+            bg="#242638", fg=TEXT, font=("Segoe UI", 9), justify="left"
+        )
+        self.tip_lbl.pack(anchor="w")
+
+    def _clear_search(self):
+        self.search_var.set("")
+        self._filter_shaders()
+
+    def _filter_shaders(self, *_):
+        cat = self.cat_var.get()
+        q = self.search_var.get().strip().lower()
+        res = []
+        for s in CURATED_SHADERS:
+            if cat != "Все шейдеры" and s.get("category") != cat:
+                continue
+            if q and (q not in s.get("name", "").lower() and q not in s.get("desc", "").lower() and q not in s.get("category", "").lower()):
+                continue
+            res.append(s)
+        self._displayed_shaders = res
+        self._render_table()
+        self.set_status(f"Показано {len(res)} шейдеров")
+
+    def _render_table(self):
+        self.pack_tree.delete(*self.pack_tree.get_children())
+        if not self._displayed_shaders:
+            self.card_title.config(text="Ничего не найдено")
+            self.card_meta.config(text="Попробуйте изменить запрос")
+            self.card_img_lbl.config(image="", text="🔍 По вашему запросу ничего не найдено")
+            self.card_hint_lbl.config(text="")
+            self.card_desc.configure(state="normal")
+            self.card_desc.delete("1.0", "end")
+            self.card_desc.insert("1.0", "Выберите другую категорию или очистите строку поиска.")
+            self.card_desc.configure(state="disabled")
+            self.compat_lbl.config(text="Шейдеры не выбраны")
+            self.btn_download.config(state="disabled")
+            self.btn_download_other.config(state="disabled")
+            return
+
+        for i, s in enumerate(self._displayed_shaders):
+            self.pack_tree.insert(
+                "", "end", iid=str(i),
+                values=(s.get("name", ""), s.get("category", ""), s.get("size", "--"))
+            )
+
+        self.prog_lbl.config(text=f"Доступно {len(self._displayed_shaders)} шейдеров. Выберите шейдер для просмотра и установки.")
+
+        # Auto-select first item
+        self.pack_tree.selection_set("0")
+        self.pack_tree.focus("0")
+        self._on_shader_select()
+
+    def _on_shader_select(self, event=None):
+        sel = self.pack_tree.selection()
+        if not sel:
+            return
+        idx = int(sel[0])
+        if idx >= len(self._displayed_shaders):
+            return
+        shader = self._displayed_shaders[idx]
+        self._selected_shader = shader
+
+        self._preview_id += 1
+        req_id = self._preview_id
+
+        # Update card UI
+        self.card_title.config(text=shader.get("name", "Шейдер"))
+        self.card_meta.config(text=f"📦 Размер: {shader.get('size', '--')}  •  {shader.get('category', '')}")
+
+        self.card_desc.configure(state="normal")
+        self.card_desc.delete("1.0", "end")
+        self.card_desc.insert("1.0", shader.get("desc", ""))
+        self.card_desc.configure(state="disabled")
+
+        # Update compact compatibility warning badge (right above install button)
+        vers = shader.get("versions", "Minecraft 1.16 - 1.21+")
+        perf = shader.get("performance", "")
+        self.compat_lbl.config(text=f"⚠️ Требуется версия: {vers}\n⚡ Нагрузка на ПК: {perf}")
+
+        self.btn_download.config(state="normal", text="⚡ Скачать и установить в shaderpacks")
+        self.btn_download_other.config(state="normal")
+
+        # Show loading placeholder
+        self.card_img_lbl.config(image="", text="⏳ Загрузка обложки...")
+        self.card_hint_lbl.config(text="Пожалуйста, подождите...")
+        self._full_screenshot_pil = None
+
+        threading.Thread(target=self._bg_load_screenshot, args=(shader, req_id), daemon=True).start()
+
+    def _bg_load_screenshot(self, shader, req_id):
+        img = None
+        img_url = shader.get("image_url", "")
+        if img_url:
+            img = fetch_image_pil(img_url)
+
+        if req_id != self._preview_id:
+            return
+
+        self.after(0, lambda: self._apply_screenshot(img, shader, req_id))
+
+    def _apply_screenshot(self, img, shader, req_id):
+        if req_id != self._preview_id:
+            return
+
+        if img:
+            max_w, max_h = 360, 190
+            img_ratio = img.width / max(1, img.height)
+            box_ratio = max_w / max_h
+            if img_ratio > box_ratio:
+                new_w = max_w
+                new_h = max(1, int(max_w / img_ratio))
+            else:
+                new_h = max_h
+                new_w = max(1, int(max_h * img_ratio))
+            resized = img.resize((new_w, new_h), Image.LANCZOS)
+
+            bg_card = Image.new("RGBA", (max_w, max_h), (36, 38, 56, 255))
+            offset_x = (max_w - new_w) // 2
+            offset_y = (max_h - new_h) // 2
+            bg_card.paste(resized, (offset_x, offset_y), resized if resized.mode == "RGBA" else None)
+
+            ph = ImageTk.PhotoImage(bg_card)
+            self._current_screenshot_ph = ph
+            self.card_img_lbl.config(image=ph, text="")
+            self.card_hint_lbl.config(text="🔍 Кликните по обложке, чтобы открыть в полном размере")
+            self._full_screenshot_pil = img
+        else:
+            self.card_img_lbl.config(image="", text="📷 Обложка временно недоступна")
+            self.card_hint_lbl.config(text="")
+            self._full_screenshot_pil = None
+
+    def _on_screenshot_click(self):
+        if not self._full_screenshot_pil:
+            return
+        def save_and_open():
+            try:
+                with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+                    tmp = f.name
+                self._full_screenshot_pil.save(tmp, "PNG")
+                os.startfile(tmp)
+            except Exception:
+                pass
+        threading.Thread(target=save_and_open, daemon=True).start()
+
+    def _download_selected(self):
+        sel = self.pack_tree.selection()
+        if not sel:
+            messagebox.showinfo("Выбор", "Выберите шейдер в таблице!")
+            return
+        idx = int(sel[0])
+        shader = self._displayed_shaders[idx]
+        mc = Path(self.mc_path_var.get())
+        if not mc.exists():
+            messagebox.showerror("Ошибка", f"Папка .minecraft не найдена:\n{mc}")
+            return
+        sp = mc / "shaderpacks"
+        sp.mkdir(parents=True, exist_ok=True)
+        self._start_download(shader, sp, is_mc=True)
+
+    def _download_selected_other(self):
+        sel = self.pack_tree.selection()
+        if not sel:
+            messagebox.showinfo("Выбор", "Выберите шейдер в таблице!")
+            return
+        idx = int(sel[0])
+        shader = self._displayed_shaders[idx]
+        d = filedialog.askdirectory(title="Выберите папку для сохранения")
+        if not d: return
+        self._start_download(shader, Path(d), is_mc=False)
+
+    def _start_download(self, shader, dest_dir, is_mc=True):
+        if self._is_downloading:
+            messagebox.showinfo("Загрузка", "Уже идет скачивание файла. Дождитесь завершения.")
+            return
+        self._is_downloading = True
+        self.prog_var.set(0)
+        sname = shader.get("name", "шейдера")
+        self.prog_lbl.config(text=f"Скачивание {sname}...")
+        self.set_status(f"Скачивание шейдера: {sname}...")
+
+        def worker():
+            def prog_cb(done, total):
+                if total > 0:
+                    pct = done / total * 100
+                    mb_done = done / (1024 * 1024)
+                    mb_tot  = total / (1024 * 1024)
+                    self.after(0, lambda: (
+                        self.prog_var.set(pct),
+                        self.prog_lbl.config(text=f"Скачивание: {mb_done:.1f} MB / {mb_tot:.1f} MB ({pct:.0f}%) — {sname}")
+                    ))
+                else:
+                    mb_done = done / (1024 * 1024)
+                    self.after(0, lambda: (
+                        self.prog_var.set(50),
+                        self.prog_lbl.config(text=f"Скачано: {mb_done:.1f} MB...")
+                    ))
+            try:
+                url = shader.get("url", "")
+                saved = download_universal_pack(url, dest_dir, prog_cb)
+                self.after(0, lambda: self._on_download_success(saved, is_mc))
+            except Exception as e:
+                self.after(0, lambda: self._on_download_error(str(e), shader.get("url", "")))
+            finally:
+                self._is_downloading = False
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_download_success(self, saved_path, is_mc):
+        self.prog_var.set(100)
+        self.prog_lbl.config(text=f"✅ Успешно скачано и установлено: {saved_path.name}")
+        self.set_status(f"Установлен шейдер: {saved_path.name}")
+        if is_mc:
+            messagebox.showinfo(
+                "Готово! Шейдер установлен",
+                f"Шейдер-пак «{saved_path.name}» успешно скачан в папку shaderpacks!\n\n"
+                f"Как включить в игре:\n"
+                f"1. Запустите Minecraft с модом Iris Shaders (рекомендуется) или OptiFine\n"
+                f"2. Настройки ➔ Настройки графики ➔ Наборы шейдеров (Shader Packs)\n"
+                f"3. Выберите «{saved_path.name}» и нажмите «Применить»!\n\n"
+                f"(Если игра уже запущена, шейдер сразу появится в списке)"
+            )
+        else:
+            messagebox.showinfo("Готово!", f"Файл сохранен в:\n{saved_path}")
+
+    def _on_download_error(self, err_msg, url):
+        self.prog_var.set(0)
+        self.prog_lbl.config(text=f"❌ Ошибка скачивания: {err_msg}")
+        self.set_status("Ошибка скачивания шейдера", err=True)
+        ans = messagebox.askyesno(
+            "Ошибка скачивания",
+            f"Не удалось скачать шейдер автоматически:\n{err_msg}\n\n"
+            f"Открыть ссылку в браузере, чтобы скачать вручную?\n"
+            f"(После скачивания нажмите кнопку «Установить свой шейдер (.ZIP) с ПК»)"
+        )
+        if ans:
+            webbrowser.open(url)
+
+    def _install_local_zip(self):
+        path = filedialog.askopenfilename(
+            title="Выберите архив с шейдером (.zip)",
+            filetypes=[("ZIP архивы", "*.zip"), ("Все файлы", "*.*")]
+        )
+        if not path: return
+        mc = Path(self.mc_path_var.get())
+        if not mc.exists():
+            messagebox.showerror("Ошибка", f"Папка .minecraft не найдена:\n{mc}")
+            return
+        sp = mc / "shaderpacks"
+        sp.mkdir(parents=True, exist_ok=True)
+        dest = sp / Path(path).name
+        try:
+            shutil.copy2(path, dest)
+            self.set_status(f"Установлен шейдер: {dest.name}")
+            messagebox.showinfo(
+                "Готово! Шейдер установлен",
+                f"Шейдер-пак «{dest.name}» успешно скопирован в папку shaderpacks!\n\n"
+                f"Как включить в игре:\n"
+                f"1. Откройте Minecraft (с Iris или OptiFine)\n"
+                f"2. Настройки графики ➔ Наборы шейдеров (Shader Packs)\n"
+                f"3. Выберите «{dest.name}» и нажмите «Применить»!"
+            )
+        except Exception as e:
+            messagebox.showerror("Ошибка копирования", str(e))
+
+    def _show_iris_guide(self):
+        messagebox.showinfo(
+            "Инструкция: Как запустить шейдеры в игре",
+            "Для работы шейдеров в Minecraft нужен мод на шейдеры:\n\n"
+            "1. Рекомендуемый мод: «Iris Shaders» (для Fabric / NeoForge)\n"
+            "   • Скачивается в любом лаунчере (TLauncher, Prism, Modrinth) в 1 клик\n"
+            "   • Даёт самый высокий FPS и поддерживает 99% шейдеров\n\n"
+            "2. Альтернатива: «OptiFine» (для Forge / Ванилла)\n"
+            "   • Классический мод со встроенной поддержкой шейдеров\n\n"
+            "3. Активация в игре:\n"
+            "   • Настройки ➔ Настройки графики ➔ Наборы шейдеров (Shader Packs)\n"
+            "   • Выберите скачанный шейдер и нажмите «Применить»!"
+        )
+
 # ── Main Application Window ───────────────────────────────────────────────────
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Minecraft Texture Replacer v3.0")
-        self.geometry("1250x820")
+        self.title("Minecraft Texture & Shader Manager v3.1")
+        self.geometry("1260x830")
         self.minsize(1050, 680)
         self.configure(bg=BG)
         apply_style(self)
@@ -1783,7 +2368,7 @@ class App(tk.Tk):
 
         hdr = tk.Frame(self, bg=SURFACE, pady=12)
         hdr.pack(fill="x")
-        tk.Label(hdr, text="🎮 Minecraft Texture Replacer", font=("Segoe UI", 18, "bold"), bg=SURFACE, fg=ACCENT).pack(side="left", padx=16)
+        tk.Label(hdr, text="🎮 Minecraft Texture & Shader Manager", font=("Segoe UI", 18, "bold"), bg=SURFACE, fg=ACCENT).pack(side="left", padx=16)
         tk.Label(hdr, text="Папка .minecraft:", bg=SURFACE, fg=SUBTEXT, font=("Segoe UI", 9)).pack(side="left", padx=(20, 4))
         tk.Entry(hdr, textvariable=self.mc_path_var, width=46, bg=BG, fg=TEXT, insertbackground=TEXT, relief="flat", font=("Segoe UI", 9)).pack(side="left")
         ttk.Button(hdr, text="Обзор", command=self._browse_mc).pack(side="left", padx=6)
@@ -1793,9 +2378,11 @@ class App(tk.Tk):
 
         self.tex_tab    = TextureTab(nb, self.mc_path_var, self._set_status)
         self.github_tab = GitHubTab(nb, self.mc_path_var, self._set_status)
+        self.shader_tab = ShaderTab(nb, self.mc_path_var, self._set_status)
 
         nb.add(self.tex_tab,    text="  ✏️ Заменить на свои фото  ")
-        nb.add(self.github_tab, text="  ⭐ Избранное и GitHub  ")
+        nb.add(self.github_tab, text="  ⭐ Текстур-паки GitHub  ")
+        nb.add(self.shader_tab, text="  ☀️ Шейдеры  ")
 
         self.status_var = tk.StringVar(value="Готов к работе")
         sb = tk.Frame(self, bg=SURFACE, pady=5)
