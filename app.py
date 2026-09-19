@@ -1,20 +1,30 @@
 """
-Minecraft Texture & Shader Manager v3.1
-=======================================
+Minecraft Resource & Shader Manager v3.2
+=========================================
 Tab 1 - Replace textures with your own photos (Totem, Grass, etc.)
-Tab 2 - Download texture packs from GitHub with screenshot preview
-Tab 3 - Download & install shaders (Shaderpacks) with version warning & Iris/OptiFine guide
+Tab 2 - Preview, listen & replace in-game sounds (Totem, Hurt, Anvil, etc.)
+Tab 3 - Download texture packs from GitHub with screenshot preview
+Tab 4 - Download & install shaders (Shaderpacks) with version warning & Iris/OptiFine guide
 """
 
 import sys, subprocess, importlib
 
 # Auto-install dependencies if running from Python directly
-for _mod, _pkg in [("PIL", "pillow"), ("requests", "requests"), ("bs4", "beautifulsoup4")]:
+for _mod, _pkg in [
+    ("PIL", "pillow"),
+    ("requests", "requests"),
+    ("bs4", "beautifulsoup4"),
+    ("pygame", "pygame-ce"),
+    ("soundfile", "soundfile")
+]:
     try:
         importlib.import_module(_mod)
     except ImportError:
         if not getattr(sys, "frozen", False):
-            subprocess.check_call([sys.executable, "-m", "pip", "install", "--quiet", _pkg])
+            try:
+                subprocess.check_call([sys.executable, "-m", "pip", "install", "--quiet", _pkg])
+            except Exception as _err:
+                print(f"Failed to auto-install {_pkg}: {_err}")
 
 import html, io, json, os, posixpath, re, shutil, tempfile, threading, time, webbrowser, zipfile
 import urllib.parse
@@ -25,6 +35,19 @@ from tkinter import filedialog, messagebox, ttk
 import requests
 from bs4 import BeautifulSoup
 from PIL import Image, ImageDraw, ImageOps, ImageTk
+
+# Audio engine imports
+try:
+    import pygame
+    if not pygame.mixer.get_init():
+        pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=1024)
+except Exception:
+    pygame = None
+
+try:
+    import soundfile as sf
+except Exception:
+    sf = None
 
 # ── Colors & Theme ────────────────────────────────────────────────────────────
 BG      = "#1e1e2e"
@@ -2354,11 +2377,1152 @@ class ShaderTab(tk.Frame):
             "   • Выберите скачанный шейдер и нажмите «Применить»!"
         )
 
+# ── Sound Infrastructure & Tab ────────────────────────────────────────────────
+def load_minecraft_sound_index(mc_path):
+    mc_path = Path(mc_path)
+    idx_dir = mc_path / "assets" / "indexes"
+    obj_dir = mc_path / "assets" / "objects"
+    if not idx_dir.exists():
+        return None, {}
+
+    json_files = list(idx_dir.glob("*.json"))
+    if not json_files:
+        return None, {}
+
+    def sort_key(p):
+        stem = p.stem
+        try:
+            return (int(stem), p.stat().st_mtime)
+        except ValueError:
+            return (0, p.stat().st_mtime)
+
+    # Sort so oldest are first, then newest overwrite with most up-to-date mappings
+    json_files.sort(key=sort_key)
+
+    sounds = {}
+    last_idx_name = json_files[-1].name
+    for jf in json_files:
+        try:
+            with open(jf, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            objects = data.get("objects", {})
+            for k, v in objects.items():
+                if k.startswith("minecraft/sounds/") and k.endswith(".ogg"):
+                    rel_path = k[len("minecraft/sounds/"):]
+                    h = v.get("hash", "")
+                    size = v.get("size", 0)
+                    disk_file = None
+                    if h:
+                        cand = obj_dir / h[:2] / h
+                        if cand.exists():
+                            disk_file = cand
+                    # If already seen but current has existing disk file, prefer one with disk file
+                    if rel_path not in sounds or disk_file is not None:
+                        sounds[rel_path] = {
+                            "id": rel_path,
+                            "hash": h,
+                            "size": size,
+                            "disk_path": disk_file
+                        }
+        except Exception as e:
+            print(f"Error loading sound index {jf}: {e}")
+
+    return last_idx_name, sounds
+
+def convert_audio_to_ogg(input_path, output_ogg_path):
+    input_path = Path(input_path)
+    output_ogg_path = Path(output_ogg_path)
+    output_ogg_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if input_path.suffix.lower() == ".ogg":
+        shutil.copy2(input_path, output_ogg_path)
+        return True
+
+    if sf is not None:
+        try:
+            data, samplerate = sf.read(str(input_path))
+            sf.write(str(output_ogg_path), data, samplerate, format="OGG", subtype="VORBIS")
+            return True
+        except Exception as e:
+            print(f"soundfile conversion error: {e}")
+
+    shutil.copy2(input_path, output_ogg_path)
+    return True
+
+def make_sound_pack_png(dest_path):
+    try:
+        img = Image.new("RGBA", (128, 128), (30, 30, 46, 255))
+        draw = ImageDraw.Draw(img)
+        draw.rectangle([4, 4, 123, 123], outline=(137, 180, 250), width=3)
+        draw.polygon([(36, 50), (52, 50), (74, 34), (74, 94), (52, 78), (36, 78)], fill=(166, 227, 161))
+        draw.arc([68, 44, 96, 84], -60, 60, fill=(137, 180, 250), width=4)
+        draw.arc([62, 32, 112, 96], -60, 60, fill=(245, 194, 231), width=4)
+        img.save(dest_path, "PNG")
+    except Exception:
+        pass
+
+SOUND_ALIASES = {
+    "item/totem/use_totem.ogg": [
+        "assets/minecraft/sounds/item/totem/use_totem.ogg",
+        "assets/minecraft/sounds/item/totem/use.ogg"
+    ],
+    "damage/hit1.ogg": [
+        "assets/minecraft/sounds/damage/hit1.ogg",
+        "assets/minecraft/sounds/entity/player/hurt1.ogg"
+    ],
+    "damage/hit2.ogg": [
+        "assets/minecraft/sounds/damage/hit2.ogg",
+        "assets/minecraft/sounds/entity/player/hurt2.ogg"
+    ],
+    "damage/hit3.ogg": [
+        "assets/minecraft/sounds/damage/hit3.ogg",
+        "assets/minecraft/sounds/entity/player/hurt3.ogg"
+    ],
+    "entity/creeper/primed.ogg": [
+        "assets/minecraft/sounds/entity/creeper/primed.ogg",
+        "assets/minecraft/sounds/mob/creeper/say1.ogg",
+        "assets/minecraft/sounds/mob/creeper/say2.ogg",
+        "assets/minecraft/sounds/mob/creeper/say3.ogg",
+        "assets/minecraft/sounds/mob/creeper/say4.ogg"
+    ],
+    "random/explode1.ogg": [
+        "assets/minecraft/sounds/random/explode1.ogg",
+        "assets/minecraft/sounds/entity/generic/explode1.ogg"
+    ],
+    "random/explode2.ogg": [
+        "assets/minecraft/sounds/random/explode2.ogg",
+        "assets/minecraft/sounds/entity/generic/explode2.ogg"
+    ],
+    "random/explode3.ogg": [
+        "assets/minecraft/sounds/random/explode3.ogg",
+        "assets/minecraft/sounds/entity/generic/explode3.ogg"
+    ],
+    "random/explode4.ogg": [
+        "assets/minecraft/sounds/random/explode4.ogg",
+        "assets/minecraft/sounds/entity/generic/explode4.ogg"
+    ],
+    "random/levelup.ogg": [
+        "assets/minecraft/sounds/random/levelup.ogg",
+        "assets/minecraft/sounds/entity/player/levelup.ogg"
+    ],
+    "random/orb.ogg": [
+        "assets/minecraft/sounds/random/orb.ogg",
+        "assets/minecraft/sounds/entity/experience_orb/touch.ogg"
+    ],
+    "random/anvil_land.ogg": [
+        "assets/minecraft/sounds/random/anvil_land.ogg",
+        "assets/minecraft/sounds/block/anvil/land.ogg"
+    ],
+    "random/anvil_use.ogg": [
+        "assets/minecraft/sounds/random/anvil_use.ogg",
+        "assets/minecraft/sounds/block/anvil/use.ogg"
+    ],
+    "random/anvil_break.ogg": [
+        "assets/minecraft/sounds/random/anvil_break.ogg",
+        "assets/minecraft/sounds/block/anvil/destroy.ogg"
+    ],
+    "random/chestopen.ogg": [
+        "assets/minecraft/sounds/random/chestopen.ogg",
+        "assets/minecraft/sounds/block/chest/open.ogg"
+    ],
+    "random/chestclosed.ogg": [
+        "assets/minecraft/sounds/random/chestclosed.ogg",
+        "assets/minecraft/sounds/block/chest/close.ogg"
+    ],
+    "random/bow.ogg": [
+        "assets/minecraft/sounds/random/bow.ogg",
+        "assets/minecraft/sounds/entity/arrow/shoot.ogg"
+    ],
+    "random/eat1.ogg": [
+        "assets/minecraft/sounds/random/eat1.ogg",
+        "assets/minecraft/sounds/entity/generic/eat1.ogg"
+    ],
+    "random/drink.ogg": [
+        "assets/minecraft/sounds/random/drink.ogg",
+        "assets/minecraft/sounds/entity/generic/drink.ogg"
+    ],
+    "random/burp.ogg": [
+        "assets/minecraft/sounds/random/burp.ogg",
+        "assets/minecraft/sounds/entity/player/burp.ogg"
+    ]
+}
+
+CURATED_POPULAR_SOUNDS = [
+    {
+        "id": "item/totem/use_totem.ogg",
+        "name": "🌟 Тотем бессмертия (Активация)",
+        "category": "🌟 Популярные",
+        "desc": "Звук срабатывания тотема бессмертия при спасении жизни игрока (самый популярный звук для замены)."
+    },
+    {
+        "id": "damage/hit1.ogg",
+        "name": "🩸 Урон игрока #1 («Oof!» / Хит)",
+        "category": "🌟 Популярные",
+        "desc": "Основной звук получения любого урона персонажем (тот самый легендарный «Oof!»)."
+    },
+    {
+        "id": "damage/hit2.ogg",
+        "name": "🩸 Урон игрока #2",
+        "category": "🌟 Популярные",
+        "desc": "Второй вариант звука получения урона персонажем."
+    },
+    {
+        "id": "damage/hit3.ogg",
+        "name": "🩸 Урон игрока #3",
+        "category": "🌟 Популярные",
+        "desc": "Третий вариант звука получения урона персонажем."
+    },
+    {
+        "id": "random/explode1.ogg",
+        "name": "💥 Взрыв ТНТ / Крипера #1",
+        "category": "🌟 Популярные",
+        "desc": "Громкий звук детонации динамита или взрыва крипера."
+    },
+    {
+        "id": "random/explode2.ogg",
+        "name": "💥 Взрыв ТНТ / Крипера #2",
+        "category": "🌟 Популярные",
+        "desc": "Вариант звука взрыва ТНТ или крипера."
+    },
+    {
+        "id": "entity/creeper/primed.ogg",
+        "name": "💣 Шипение крипера перед взрывом",
+        "category": "🌟 Популярные",
+        "desc": "Тревожное шипение фитиля крипера при приближении к игроку."
+    },
+    {
+        "id": "random/levelup.ogg",
+        "name": "⭐ Получение уровня (Level Up)",
+        "category": "🌟 Популярные",
+        "desc": "Торжественный звук повышения уровня опыта игрока."
+    },
+    {
+        "id": "random/orb.ogg",
+        "name": "✨ Сбор сфер опыта (Exp Ding)",
+        "category": "🌟 Популярные",
+        "desc": "Звонкий колокольчик при подборе сфер опыта."
+    },
+    {
+        "id": "random/chestopen.ogg",
+        "name": "📦 Открытие сундука",
+        "category": "🌟 Популярные",
+        "desc": "Скрип открывающейся крышки сундука."
+    },
+    {
+        "id": "random/chestclosed.ogg",
+        "name": "📦 Закрытие сундука",
+        "category": "🌟 Популярные",
+        "desc": "Хлопок закрывающейся крышки сундука."
+    },
+    {
+        "id": "random/anvil_land.ogg",
+        "name": "🔨 Падение наковальни",
+        "category": "🌟 Популярные",
+        "desc": "Тяжёлый металлический звон при падении наковальни."
+    },
+    {
+        "id": "random/anvil_use.ogg",
+        "name": "🔨 Использование наковальни",
+        "category": "🌟 Популярные",
+        "desc": "Удар молота по наковальне при починке или переименовании предмета."
+    },
+    {
+        "id": "random/bow.ogg",
+        "name": "🏹 Выстрел из лука",
+        "category": "🌟 Популярные",
+        "desc": "Свист тетивы и вылет стрелы из лука."
+    },
+    {
+        "id": "entity/player/attack/sweep1.ogg",
+        "name": "⚔️ Взмах меча (Sweep Attack)",
+        "category": "🌟 Популярные",
+        "desc": "Рассекающий взмах меча при круговой атаке по мобам."
+    },
+    {
+        "id": "random/eat1.ogg",
+        "name": "🍖 Поедание еды (Хруст)",
+        "category": "🌟 Популярные",
+        "desc": "Звук пережевывания яблока, стейка или хлеба."
+    },
+    {
+        "id": "random/drink.ogg",
+        "name": "🧪 Питьё зелья / молока",
+        "category": "🌟 Популярные",
+        "desc": "Звук выпивания зелья из стеклянной бутылочки."
+    },
+    {
+        "id": "random/burp.ogg",
+        "name": "😋 Отрыжка после еды",
+        "category": "🌟 Популярные",
+        "desc": "Классический забавный звук насыщения персонажа после приёма пищи."
+    },
+    {
+        "id": "block/bell/bell_use01.ogg",
+        "name": "🔔 Звон деревенского колокола",
+        "category": "🌟 Популярные",
+        "desc": "Громкий набат колокола в деревне жителей."
+    },
+    {
+        "id": "mob/villager/idle1.ogg",
+        "name": "🗣️ Житель (Хммм)",
+        "category": "🌟 Популярные",
+        "desc": "Классическое бормотание деревенского жителя."
+    },
+    {
+        "id": "mob/villager/yes1.ogg",
+        "name": "🗣️ Житель (Согласие / Торговля)",
+        "category": "🌟 Популярные",
+        "desc": "Довольный возглас жителя при успешной сделке."
+    },
+    {
+        "id": "mob/villager/no1.ogg",
+        "name": "🗣️ Житель (Отказ)",
+        "category": "🌟 Популярные",
+        "desc": "Недовольное мычание жителя при невозможности торговли."
+    },
+    {
+        "id": "mob/zombie/say1.ogg",
+        "name": "🧟 Рычание зомби",
+        "category": "🌟 Популярные",
+        "desc": "Глухое урчание приближающегося зомби."
+    },
+    {
+        "id": "mob/endermen/scream1.ogg",
+        "name": "👁️ Эндермен (Крик при взгляде)",
+        "category": "🌟 Популярные",
+        "desc": "Жуткий пронзительный вопль разозлившегося странника Края."
+    },
+    {
+        "id": "mob/warden/roar1.ogg",
+        "name": "👾 Варден (Грозный рёв)",
+        "category": "🌟 Популярные",
+        "desc": "Устрашающий рык Хранителя тёмных глубин."
+    },
+    {
+        "id": "mob/enderdragon/growl1.ogg",
+        "name": "🐉 Дракон Края (Рык)",
+        "category": "🌟 Популярные",
+        "desc": "Могучий устрашающий рёв Эндер-дракона."
+    },
+    {
+        "id": "records/pigstep.ogg",
+        "name": "🎵 Пластинка: Pigstep (Lena Raine)",
+        "category": "🌟 Популярные",
+        "desc": "Зажигательный и энергичный электронный трек из Незера."
+    },
+    {
+        "id": "records/cat.ogg",
+        "name": "🎵 Пластинка: Cat (C418)",
+        "category": "🌟 Популярные",
+        "desc": "Легендарный зелёный виниловый диск с доброй мелодией."
+    },
+    {
+        "id": "records/otherside.ogg",
+        "name": "🎵 Пластинка: Otherside (Lena Raine)",
+        "category": "🌟 Популярные",
+        "desc": "Красивая и мелодичная пластинка из древних глубин."
+    }
+]
+
+class SoundPlayer:
+    def __init__(self):
+        self._current_sound = None
+        self._channel = None
+        self._lock = threading.Lock()
+        self._volume = 1.0
+
+    def _init_mixer(self):
+        if pygame:
+            try:
+                if not pygame.mixer.get_init():
+                    pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=1024)
+            except Exception:
+                pass
+
+    def set_volume(self, vol):
+        self._volume = max(0.0, min(1.0, float(vol)))
+        if self._channel:
+            try:
+                self._channel.set_volume(self._volume)
+            except Exception:
+                pass
+
+    def play(self, file_path, on_finish_callback=None):
+        if not file_path or not Path(file_path).exists():
+            raise FileNotFoundError("Файл звука не найден на диске")
+        self.stop()
+        self._init_mixer()
+        if not pygame or not pygame.mixer.get_init():
+            raise RuntimeError("Аудиосистема pygame не инициализирована")
+
+        with self._lock:
+            snd = pygame.mixer.Sound(str(file_path))
+            snd.set_volume(self._volume)
+            ch = snd.play()
+            self._current_sound = snd
+            self._channel = ch
+
+            if on_finish_callback and ch:
+                def _monitor():
+                    while ch.get_busy():
+                        time.sleep(0.05)
+                    on_finish_callback()
+                threading.Thread(target=_monitor, daemon=True).start()
+
+            return snd.get_length()
+
+    def stop(self):
+        with self._lock:
+            if pygame and pygame.mixer.get_init():
+                try:
+                    pygame.mixer.stop()
+                except Exception:
+                    pass
+            self._channel = None
+            self._current_sound = None
+
+    def is_playing(self):
+        return bool(self._channel and self._channel.get_busy())
+
+# ── Tab 2: Sound Manager ──────────────────────────────────────────────────────
+class SoundTab(tk.Frame):
+    def __init__(self, parent, mc_path_var, status_fn):
+        super().__init__(parent, bg=BG)
+        self.mc_path_var = mc_path_var
+        self.set_status = status_fn
+
+        self.player = SoundPlayer()
+        self._indexed_sounds = {}     # rel_path -> info dict
+        self._all_sounds = []         # Unified list of sound dicts
+        self._displayed_sounds = []   # Current filtered list
+        self._replacements = []       # Queued replacements: {'sound': dict, 'user_path': Path, 'duration': float}
+
+        self._selected_sound = None
+        self._selected_user_file = None
+        self._user_file_duration = 0.0
+
+        self._is_playing_orig = False
+        self._is_playing_user = False
+        self._is_working = False
+
+        self._build_ui()
+        self.after(200, self._reload_sounds)
+
+    def _build_ui(self):
+        # 1. Header Banner
+        hdr = tk.Frame(self, bg=SURFACE, padx=16, pady=9)
+        hdr.pack(fill="x", padx=14, pady=(10, 8))
+
+        tk.Label(
+            hdr, text="🔊 Звуки Minecraft (Прослушать и заменить)",
+            bg=SURFACE, fg=ACCENT, font=("Segoe UI", 13, "bold")
+        ).pack(anchor="w")
+
+        tk.Label(
+            hdr,
+            text="Встроенный аудиоплеер для звуков игры, удобная замена на любые свои файлы (.mp3, .wav, .ogg, .flac)\n"
+                 "и быстрая сборка звукового ресурс-пака с автоконвертацией в 1 клик!",
+            bg=SURFACE, fg=TEXT, font=("Segoe UI", 9), justify="left"
+        ).pack(anchor="w", pady=(2, 0))
+
+        # 2. Filter & Toolbar
+        bar = tk.Frame(self, bg=SURFACE, padx=12, pady=7, highlightthickness=1, highlightbackground="#45475a")
+        bar.pack(fill="x", padx=14, pady=(0, 8))
+
+        tk.Label(bar, text="Категория:", bg=SURFACE, fg=ACCENT, font=("Segoe UI", 9, "bold")).pack(side="left")
+        self.cat_var = tk.StringVar(value="🌟 Самые популярные")
+        self.cat_cb = ttk.Combobox(
+            bar, textvariable=self.cat_var, state="readonly", width=24,
+            values=[
+                "🌟 Самые популярные",
+                "Все звуки игры",
+                "Предметы (item)",
+                "Блоки (block)",
+                "Мобы и сущности (mob/entity)",
+                "Урон (damage)",
+                "Взрывы и случайные (random)",
+                "Музыкальные диски (records)",
+                "Окружение (ambient)",
+                "Интерфейс (ui)"
+            ]
+        )
+        self.cat_cb.pack(side="left", padx=(6, 12))
+        self.cat_cb.bind("<<ComboboxSelected>>", self._filter_sounds)
+
+        tk.Label(bar, text="Поиск звука:", bg=SURFACE, fg=SUBTEXT, font=("Segoe UI", 9)).pack(side="left")
+        self.search_var = tk.StringVar()
+        s_ent = tk.Entry(bar, textvariable=self.search_var, width=18, bg=BG, fg=TEXT, insertbackground=TEXT, relief="flat", font=("Segoe UI", 9))
+        s_ent.pack(side="left", padx=(6, 6))
+        s_ent.bind("<KeyRelease>", self._filter_sounds)
+
+        btn_clear = tk.Button(
+            bar, text="✕", bg="#313244", fg=SUBTEXT, activebackground="#45475a",
+            font=("Segoe UI", 8, "bold"), relief="flat", padx=6, pady=2, cursor="hand2",
+            command=self._clear_search
+        )
+        btn_clear.pack(side="left", padx=(0, 12))
+
+        # Volume slider
+        tk.Label(bar, text="🔊 Громкость:", bg=SURFACE, fg=SUBTEXT, font=("Segoe UI", 9)).pack(side="left")
+        self.vol_scale = tk.Scale(
+            bar, from_=0, to=100, orient="horizontal", length=90,
+            showvalue=0, bg=SURFACE, fg=ACCENT, highlightthickness=0,
+            troughcolor=BG, activebackground=ACCENT, command=self._on_volume_change
+        )
+        self.vol_scale.set(100)
+        self.vol_scale.pack(side="left", padx=(4, 12))
+
+        btn_refresh = tk.Button(
+            bar, text="🔄 Обновить звуки игры", bg="#45475a", fg=TEXT, activebackground="#585b70",
+            font=("Segoe UI", 9), relief="flat", padx=10, pady=4, cursor="hand2",
+            command=self._reload_sounds
+        )
+        btn_refresh.pack(side="right")
+
+        # 3. Main Paned Layout
+        paned = tk.PanedWindow(self, orient="horizontal", bg=BG, sashrelief="flat", sashwidth=8)
+        paned.pack(fill="both", expand=True, padx=14, pady=(0, 6))
+
+        # ── LEFT: Sound Catalog Table ─────────────────────────────────────────
+        left_box = tk.Frame(paned, bg=SURFACE, padx=8, pady=8)
+        paned.add(left_box, width=540)
+
+        left_hdr = tk.Frame(left_box, bg=SURFACE)
+        left_hdr.pack(fill="x", pady=(0, 6))
+        tk.Label(left_hdr, text="Каталог звуков игры", font=("Segoe UI", 10, "bold"), bg=SURFACE, fg=ACCENT).pack(side="left")
+        self.count_lbl = tk.Label(left_hdr, text="Загрузка...", bg=SURFACE, fg=SUBTEXT, font=("Segoe UI", 8))
+        self.count_lbl.pack(side="right")
+
+        tree_frame = tk.Frame(left_box, bg=SURFACE)
+        tree_frame.pack(fill="both", expand=True)
+
+        cols = ("name", "cat", "path", "orig")
+        self.sound_tree = ttk.Treeview(tree_frame, columns=cols, show="headings", selectmode="browse")
+        self.sound_tree.heading("name", text="Звук", anchor="w")
+        self.sound_tree.heading("cat", text="Категория", anchor="w")
+        self.sound_tree.heading("path", text="Путь в игре", anchor="w")
+        self.sound_tree.heading("orig", text="Оригинал", anchor="center")
+
+        self.sound_tree.column("name", width=190, minwidth=140)
+        self.sound_tree.column("cat", width=100, minwidth=80)
+        self.sound_tree.column("path", width=170, minwidth=120)
+        self.sound_tree.column("orig", width=70, minwidth=60, anchor="center")
+
+        sb = ttk.Scrollbar(tree_frame, orient="vertical", command=self.sound_tree.yview)
+        self.sound_tree.configure(yscrollcommand=sb.set)
+        self.sound_tree.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
+
+        self.sound_tree.bind("<<TreeviewSelect>>", self._on_sound_selected)
+
+        # ── RIGHT: Details, Player, Replacements, Actions ─────────────────────
+        right_box = tk.Frame(paned, bg=SURFACE, padx=12, pady=8)
+        paned.add(right_box, width=640)
+
+        # Card 1: Original Minecraft Sound Player
+        card_orig = tk.LabelFrame(right_box, text="  🎵 1. Оригинальный звук из Minecraft  ", bg=SURFACE, fg=ACCENT, font=("Segoe UI", 10, "bold"), padx=10, pady=8)
+        card_orig.pack(fill="x", pady=(0, 8))
+
+        self.orig_title_lbl = tk.Label(card_orig, text="Выберите звук в таблице слева", font=("Segoe UI", 11, "bold"), bg=SURFACE, fg=TEXT, anchor="w")
+        self.orig_title_lbl.pack(fill="x")
+
+        self.orig_path_lbl = tk.Label(card_orig, text="", font=("Segoe UI", 8), bg=SURFACE, fg=SUBTEXT, anchor="w")
+        self.orig_path_lbl.pack(fill="x", pady=(1, 4))
+
+        self.orig_desc_lbl = tk.Label(card_orig, text="", font=("Segoe UI", 9), bg=SURFACE, fg=TEXT, justify="left", wraplength=580, anchor="w")
+        self.orig_desc_lbl.pack(fill="x", pady=(0, 6))
+
+        orig_row = tk.Frame(card_orig, bg=SURFACE)
+        orig_row.pack(fill="x")
+
+        self.btn_play_orig = tk.Button(
+            orig_row, text="▶️ Прослушать оригинал", bg=SUCCESS, fg="#1e1e2e", activebackground="#94e2d5",
+            font=("Segoe UI", 9, "bold"), relief="flat", padx=12, pady=5, cursor="hand2",
+            state="disabled", command=self._play_original
+        )
+        self.btn_play_orig.pack(side="left", padx=(0, 6))
+
+        self.btn_stop_orig = tk.Button(
+            orig_row, text="⏹️ Стоп", bg="#45475a", fg=TEXT, activebackground="#585b70",
+            font=("Segoe UI", 9), relief="flat", padx=10, pady=5, cursor="hand2",
+            state="disabled", command=self._stop_playback
+        )
+        self.btn_stop_orig.pack(side="left", padx=(0, 10))
+
+        self.orig_info_lbl = tk.Label(orig_row, text="", bg=SURFACE, fg=SUBTEXT, font=("Segoe UI", 9))
+        self.orig_info_lbl.pack(side="left", fill="x", expand=True)
+
+        # Card 2: User Replacement Audio
+        card_user = tk.LabelFrame(right_box, text="  🎧 2. Заменить на свой звук  ", bg=SURFACE, fg=ACCENT, font=("Segoe UI", 10, "bold"), padx=10, pady=8)
+        card_user.pack(fill="x", pady=(0, 8))
+
+        user_top = tk.Frame(card_user, bg=SURFACE)
+        user_top.pack(fill="x", pady=(0, 6))
+
+        self.btn_choose_user = tk.Button(
+            user_top, text="📂 Выбрать свой звук (.mp3, .wav, .ogg, .flac)",
+            bg="#45475a", fg=TEXT, activebackground="#585b70",
+            font=("Segoe UI", 9, "bold"), relief="flat", padx=12, pady=5, cursor="hand2",
+            command=self._choose_user_sound
+        )
+        self.btn_choose_user.pack(side="left", padx=(0, 10))
+
+        self.user_file_lbl = tk.Label(user_top, text="Файл не выбран (нажмите кнопку слева)", bg=SURFACE, fg=SUBTEXT, font=("Segoe UI", 9), anchor="w")
+        self.user_file_lbl.pack(side="left", fill="x", expand=True)
+
+        user_ctrl_row = tk.Frame(card_user, bg=SURFACE)
+        user_ctrl_row.pack(fill="x")
+
+        self.btn_play_user = tk.Button(
+            user_ctrl_row, text="▶️ Прослушать свою запись", bg="#89b4fa", fg="#1e1e2e", activebackground="#b4befe",
+            font=("Segoe UI", 9, "bold"), relief="flat", padx=12, pady=5, cursor="hand2",
+            state="disabled", command=self._play_user_sound
+        )
+        self.btn_play_user.pack(side="left", padx=(0, 6))
+
+        self.btn_stop_user = tk.Button(
+            user_ctrl_row, text="⏹️ Стоп", bg="#45475a", fg=TEXT, activebackground="#585b70",
+            font=("Segoe UI", 9), relief="flat", padx=10, pady=5, cursor="hand2",
+            state="disabled", command=self._stop_playback
+        )
+        self.btn_stop_user.pack(side="left", padx=(0, 12))
+
+        self.btn_add_replacement = tk.Button(
+            user_ctrl_row, text="➕ Добавить замену в набор", bg=SUCCESS, fg="#1e1e2e", activebackground="#94e2d5",
+            font=("Segoe UI", 9, "bold"), relief="flat", padx=14, pady=5, cursor="hand2",
+            state="disabled", command=self._add_replacement
+        )
+        self.btn_add_replacement.pack(side="right")
+
+        # Card 3: Queued Replacements Table
+        card_reps = tk.LabelFrame(right_box, text="  📋 3. Запланированные замены в ресурс-паке  ", bg=SURFACE, fg=ACCENT, font=("Segoe UI", 10, "bold"), padx=10, pady=6)
+        card_reps.pack(fill="both", expand=True, pady=(0, 8))
+
+        reps_table_frame = tk.Frame(card_reps, bg=SURFACE)
+        reps_table_frame.pack(fill="both", expand=True, pady=(0, 6))
+
+        rep_cols = ("orig_name", "user_audio")
+        self.rep_tree = ttk.Treeview(reps_table_frame, columns=rep_cols, show="headings", selectmode="browse", height=4)
+        self.rep_tree.heading("orig_name", text="Оригинальный звук в игре", anchor="w")
+        self.rep_tree.heading("user_audio", text="Ваш аудиофайл", anchor="w")
+        self.rep_tree.column("orig_name", width=250, minwidth=180)
+        self.rep_tree.column("user_audio", width=320, minwidth=200)
+
+        rep_sb = ttk.Scrollbar(reps_table_frame, orient="vertical", command=self.rep_tree.yview)
+        self.rep_tree.configure(yscrollcommand=rep_sb.set)
+        self.rep_tree.pack(side="left", fill="both", expand=True)
+        rep_sb.pack(side="right", fill="y")
+
+        reps_btn_row = tk.Frame(card_reps, bg=SURFACE)
+        reps_btn_row.pack(fill="x")
+
+        self.rep_count_lbl = tk.Label(reps_btn_row, text="Замен в наборе: 0", bg=SURFACE, fg=SUBTEXT, font=("Segoe UI", 9))
+        self.rep_count_lbl.pack(side="left")
+
+        self.btn_clear_reps = tk.Button(
+            reps_btn_row, text="🧹 Очистить список", bg="#313244", fg=SUBTEXT, activebackground="#45475a",
+            font=("Segoe UI", 8), relief="flat", padx=8, pady=3, cursor="hand2", command=self._clear_replacements
+        )
+        self.btn_clear_reps.pack(side="right")
+
+        self.btn_del_rep = tk.Button(
+            reps_btn_row, text="🗑️ Удалить выбранную", bg="#45475a", fg=TEXT, activebackground="#585b70",
+            font=("Segoe UI", 8), relief="flat", padx=8, pady=3, cursor="hand2", command=self._delete_replacement
+        )
+        self.btn_del_rep.pack(side="right", padx=(0, 6))
+
+        # Card 4: Installation & Export
+        card_install = tk.Frame(right_box, bg="#242638", padx=12, pady=10, highlightthickness=1, highlightbackground="#45475a")
+        card_install.pack(fill="x")
+
+        pname_row = tk.Frame(card_install, bg="#242638")
+        pname_row.pack(fill="x", pady=(0, 8))
+
+        tk.Label(pname_row, text="Название ресурс-пака:", bg="#242638", fg=TEXT, font=("Segoe UI", 9, "bold")).pack(side="left", padx=(0, 8))
+        self.pack_name_var = tk.StringVar(value="My Custom Sounds")
+        pname_ent = tk.Entry(pname_row, textvariable=self.pack_name_var, width=28, bg=BG, fg=TEXT, insertbackground=TEXT, relief="flat", font=("Segoe UI", 9))
+        pname_ent.pack(side="left", fill="x", expand=True)
+
+        action_row = tk.Frame(card_install, bg="#242638")
+        action_row.pack(fill="x")
+
+        self.btn_install_mc = tk.Button(
+            action_row, text="⚡ Установить звуковой пак в Minecraft",
+            bg=SUCCESS, fg="#1e1e2e", activebackground="#94e2d5",
+            font=("Segoe UI", 10, "bold"), relief="flat", padx=16, pady=7, cursor="hand2",
+            command=self._install_to_mc
+        )
+        self.btn_install_mc.pack(side="left", fill="x", expand=True, padx=(0, 8))
+
+        self.btn_export_zip = tk.Button(
+            action_row, text="📁 Экспорт в ZIP-архив...",
+            bg="#45475a", fg=TEXT, activebackground="#585b70",
+            font=("Segoe UI", 9), relief="flat", padx=12, pady=7, cursor="hand2",
+            command=self._export_to_zip
+        )
+        self.btn_export_zip.pack(side="left")
+
+        # 4. Bottom Tip Card
+        tip_frame = tk.Frame(self, bg="#242638", padx=14, pady=6, highlightthickness=1, highlightbackground="#45475a")
+        tip_frame.pack(fill="x", padx=14, pady=(6, 8))
+        tk.Label(
+            tip_frame,
+            text="💡 Как включить в игре: Настройки ➔ Наборы ресурсов (Resource Packs) ➔ Переместите ваш созданный звуковой пак вправо ➔ «Готово»!\n"
+                 "Если игра уже запущена во время установки — нажмите сочетание клавиш F3 + T для мгновенной перезагрузки всех ресурсов.",
+            bg="#242638", fg=TEXT, font=("Segoe UI", 8), justify="left"
+        ).pack(anchor="w")
+
+    def _on_volume_change(self, val):
+        try:
+            self.player.set_volume(float(val) / 100.0)
+        except Exception:
+            pass
+
+    def _clear_search(self):
+        self.search_var.set("")
+        self._filter_sounds()
+
+    def _reload_sounds(self):
+        self.count_lbl.config(text="Чтение ресурсов Minecraft...")
+        self.set_status("Поиск звуков в .minecraft...")
+
+        def worker():
+            mc = Path(self.mc_path_var.get())
+            idx_name, indexed = load_minecraft_sound_index(mc)
+            self._indexed_sounds = indexed
+
+            all_list = []
+
+            # 1. Curated popular sounds
+            for cur in CURATED_POPULAR_SOUNDS:
+                sid = cur["id"]
+                match_info = indexed.get(sid)
+                # check aliases if exact key not in index
+                if not match_info:
+                    for alias in SOUND_ALIASES.get(sid, []):
+                        rel = alias.replace("assets/minecraft/sounds/", "")
+                        if rel in indexed:
+                            match_info = indexed[rel]
+                            break
+
+                disk_p = match_info.get("disk_path") if match_info else None
+                all_list.append({
+                    "id": sid,
+                    "name": cur["name"],
+                    "category": cur["category"],
+                    "desc": cur["desc"],
+                    "path": f"assets/minecraft/sounds/{sid}",
+                    "disk_path": disk_p,
+                    "is_curated": True
+                })
+
+            # 2. All other indexed sounds
+            for rel, info in indexed.items():
+                # Avoid exact duplicates of curated
+                if any(c["id"] == rel for c in CURATED_POPULAR_SOUNDS):
+                    continue
+                parts = rel.split("/")
+                cat_tag = parts[0] if parts else "other"
+                clean_name = parts[-1].replace(".ogg", "").replace("_", " ").title()
+                all_list.append({
+                    "id": rel,
+                    "name": f"🎵 {clean_name}",
+                    "category": cat_tag,
+                    "desc": f"Игровой звук Minecraft: {rel}",
+                    "path": f"assets/minecraft/sounds/{rel}",
+                    "disk_path": info.get("disk_path"),
+                    "is_curated": False
+                })
+
+            self._all_sounds = all_list
+            self.after(0, self._filter_sounds)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _filter_sounds(self, *_):
+        cat = self.cat_var.get()
+        q = self.search_var.get().strip().lower()
+
+        filtered = []
+        for s in self._all_sounds:
+            # Category match
+            if cat == "🌟 Самые популярные":
+                if not s.get("is_curated"):
+                    continue
+            elif cat == "Предметы (item)":
+                if not s["id"].startswith("item/"):
+                    continue
+            elif cat == "Блоки (block)":
+                if not s["id"].startswith("block/"):
+                    continue
+            elif cat == "Мобы и сущности (mob/entity)":
+                if not (s["id"].startswith("mob/") or s["id"].startswith("entity/")):
+                    continue
+            elif cat == "Урон (damage)":
+                if not (s["id"].startswith("damage/") or "hurt" in s["id"] or "hit" in s["id"]):
+                    continue
+            elif cat == "Взрывы и случайные (random)":
+                if not s["id"].startswith("random/"):
+                    continue
+            elif cat == "Музыкальные диски (records)":
+                if not (s["id"].startswith("records/") or s["id"].startswith("music/")):
+                    continue
+            elif cat == "Окружение (ambient)":
+                if not s["id"].startswith("ambient/"):
+                    continue
+            elif cat == "Интерфейс (ui)":
+                if not s["id"].startswith("ui/"):
+                    continue
+            # "Все звуки игры" passes all
+
+            # Search text match
+            if q:
+                text_corpus = f"{s.get('name', '')} {s.get('id', '')} {s.get('category', '')} {s.get('desc', '')}".lower()
+                if q not in text_corpus:
+                    continue
+
+            filtered.append(s)
+
+        self._displayed_sounds = filtered
+        self._render_table()
+
+    def _render_table(self):
+        self.sound_tree.delete(*self.sound_tree.get_children())
+        total = len(self._displayed_sounds)
+        self.count_lbl.config(text=f"Найдено: {total}")
+        self.set_status(f"Показано {total} звуков")
+
+        for i, s in enumerate(self._displayed_sounds):
+            has_disk = "✅ Есть" if s.get("disk_path") else "В игре"
+            self.sound_tree.insert(
+                "", "end", iid=str(i),
+                values=(s.get("name", ""), s.get("category", ""), s.get("id", ""), has_disk)
+            )
+
+        if total > 0:
+            self.sound_tree.selection_set("0")
+            self.sound_tree.focus("0")
+            self._on_sound_selected()
+        else:
+            self.orig_title_lbl.config(text="Ничего не найдено")
+            self.orig_path_lbl.config(text="")
+            self.orig_desc_lbl.config(text="Попробуйте изменить категорию или поисковый запрос.")
+            self.orig_info_lbl.config(text="")
+            self.btn_play_orig.config(state="disabled")
+            self.btn_stop_orig.config(state="disabled")
+            self.btn_add_replacement.config(state="disabled")
+
+    def _on_sound_selected(self, event=None):
+        self._stop_playback()
+        sel = self.sound_tree.selection()
+        if not sel:
+            return
+        idx = int(sel[0])
+        if idx >= len(self._displayed_sounds):
+            return
+        sound = self._displayed_sounds[idx]
+        self._selected_sound = sound
+
+        self.orig_title_lbl.config(text=sound.get("name", "Звук игры"))
+        self.orig_path_lbl.config(text=f"Путь в ресурс-паке: {sound.get('path', '')}")
+        self.orig_desc_lbl.config(text=sound.get("desc", ""))
+
+        disk_p = sound.get("disk_path")
+        if disk_p and disk_p.exists():
+            self.btn_play_orig.config(state="normal", text="▶️ Прослушать оригинал")
+            self.orig_info_lbl.config(text="✅ Оригинальный звук игры доступен на диске", fg=SUCCESS)
+        else:
+            self.btn_play_orig.config(state="disabled", text="▶️ Прослушать оригинал")
+            self.orig_info_lbl.config(text="⚠️ Файл отсутствует на диске (запустите Minecraft)", fg="#fab387")
+
+        self._update_add_btn_state()
+
+    def _play_original(self):
+        if not self._selected_sound:
+            return
+        disk_p = self._selected_sound.get("disk_path")
+        if not disk_p or not disk_p.exists():
+            messagebox.showinfo("Оригинал не найден", "Оригинальный аудиофайл не найден на компьютере.\nЗапустите Minecraft хотя бы раз для скачивания ассетов.")
+            return
+
+        try:
+            self._stop_playback()
+            self._is_playing_orig = True
+            self.btn_play_orig.config(text="🔊 Играет...", bg="#f9e2af")
+            self.btn_stop_orig.config(state="normal")
+
+            def on_done():
+                self.after(0, self._on_orig_finished)
+
+            dur = self.player.play(disk_p, on_finish_callback=on_done)
+            self.orig_info_lbl.config(text=f"▶️ Воспроизведение... ({dur:.1f} сек)", fg=ACCENT)
+        except Exception as e:
+            self._on_orig_finished()
+            messagebox.showerror("Ошибка воспроизведения", f"Не удалось воспроизвести звук:\n{e}")
+
+    def _on_orig_finished(self):
+        self._is_playing_orig = False
+        self.btn_play_orig.config(text="▶️ Прослушать оригинал", bg=SUCCESS)
+        self.btn_stop_orig.config(state="disabled")
+        if self._selected_sound and self._selected_sound.get("disk_path"):
+            self.orig_info_lbl.config(text="✅ Оригинальный звук игры доступен на диске", fg=SUCCESS)
+
+    def _choose_user_sound(self):
+        path = filedialog.askopenfilename(
+            title="Выберите свой аудиофайл для замены",
+            filetypes=[
+                ("Аудиофайлы", "*.mp3 *.wav *.ogg *.flac *.aac *.m4a"),
+                ("MP3 файлы", "*.mp3"),
+                ("WAV файлы", "*.wav"),
+                ("OGG Vorbis", "*.ogg"),
+                ("Все файлы", "*.*")
+            ]
+        )
+        if not path:
+            return
+        p = Path(path)
+        self._selected_user_file = p
+
+        dur = 0.0
+        try:
+            if pygame and pygame.mixer.get_init():
+                s = pygame.mixer.Sound(str(p))
+                dur = s.get_length()
+        except Exception:
+            pass
+        self._user_file_duration = dur
+
+        sz_mb = p.stat().st_size / (1024 * 1024)
+        dur_txt = f"{dur:.1f} сек" if dur > 0 else "аудио"
+        self.user_file_lbl.config(
+            text=f"🎵 {p.name} ({sz_mb:.1f} MB, {dur_txt})",
+            fg=TEXT
+        )
+        self.btn_play_user.config(state="normal")
+        self._update_add_btn_state()
+        self.set_status(f"Выбран свой звук: {p.name}")
+
+    def _play_user_sound(self):
+        if not self._selected_user_file or not self._selected_user_file.exists():
+            return
+        try:
+            self._stop_playback()
+            self._is_playing_user = True
+            self.btn_play_user.config(text="🔊 Играет...", bg="#f9e2af")
+            self.btn_stop_user.config(state="normal")
+
+            def on_done():
+                self.after(0, self._on_user_finished)
+
+            dur = self.player.play(self._selected_user_file, on_finish_callback=on_done)
+            self.set_status(f"Воспроизведение: {self._selected_user_file.name} ({dur:.1f} сек)")
+        except Exception as e:
+            self._on_user_finished()
+            messagebox.showerror("Ошибка воспроизведения", f"Не удалось воспроизвести выбранный файл:\n{e}")
+
+    def _on_user_finished(self):
+        self._is_playing_user = False
+        self.btn_play_user.config(text="▶️ Прослушать свою запись", bg="#89b4fa")
+        self.btn_stop_user.config(state="disabled")
+
+    def _stop_playback(self):
+        self.player.stop()
+        if self._is_playing_orig:
+            self._on_orig_finished()
+        if self._is_playing_user:
+            self._on_user_finished()
+
+    def _update_add_btn_state(self):
+        if self._selected_sound and self._selected_user_file:
+            self.btn_add_replacement.config(state="normal")
+        else:
+            self.btn_add_replacement.config(state="disabled")
+
+    def _add_replacement(self):
+        if not self._selected_sound or not self._selected_user_file:
+            return
+
+        sid = self._selected_sound["id"]
+        # Remove existing if already in list for same sound
+        self._replacements = [r for r in self._replacements if r["sound_id"] != sid]
+
+        # Compute target paths (primary + aliases)
+        targets = [f"assets/minecraft/sounds/{sid}"]
+        if sid in SOUND_ALIASES:
+            for al in SOUND_ALIASES[sid]:
+                if al not in targets:
+                    targets.append(al)
+
+        self._replacements.append({
+            "sound_id": sid,
+            "name": self._selected_sound["name"],
+            "user_file": self._selected_user_file,
+            "target_paths": targets
+        })
+
+        self._render_replacements()
+        self.set_status(f"Добавлена замена для «{self._selected_sound['name']}»")
+        messagebox.showinfo(
+            "Замена добавлена!",
+            f"Замена для «{self._selected_sound['name']}» добавлена в список!\n\n"
+            f"Файл: {self._selected_user_file.name}\n\n"
+            f"Вы можете добавить еще замены или нажать кнопку «Установить звуковой пак в Minecraft»!"
+        )
+
+    def _render_replacements(self):
+        self.rep_tree.delete(*self.rep_tree.get_children())
+        for i, r in enumerate(self._replacements):
+            self.rep_tree.insert(
+                "", "end", iid=str(i),
+                values=(r["name"], r["user_file"].name)
+            )
+        cnt = len(self._replacements)
+        self.rep_count_lbl.config(text=f"Замен в наборе: {cnt}")
+        if cnt > 0:
+            self.btn_install_mc.config(state="normal")
+            self.btn_export_zip.config(state="normal")
+        else:
+            self.btn_install_mc.config(state="normal")
+            self.btn_export_zip.config(state="normal")
+
+    def _delete_replacement(self):
+        sel = self.rep_tree.selection()
+        if not sel:
+            return
+        idx = int(sel[0])
+        if idx < len(self._replacements):
+            removed = self._replacements.pop(idx)
+            self._render_replacements()
+            self.set_status(f"Удалена замена: {removed['name']}")
+
+    def _clear_replacements(self):
+        if not self._replacements:
+            return
+        if messagebox.askyesno("Очистить список", "Удалить все добавленные замены звуков?"):
+            self._replacements.clear()
+            self._render_replacements()
+            self.set_status("Список замен звуков очищен")
+
+    def _install_to_mc(self):
+        if not self._replacements:
+            messagebox.showinfo("Список пуст", "Добавьте хотя бы одну замену звука в набор перед установкой!")
+            return
+
+        mc = Path(self.mc_path_var.get())
+        if not mc.exists():
+            messagebox.showerror("Ошибка", f"Папка .minecraft не найдена:\n{mc}")
+            return
+
+        pack_name = self.pack_name_var.get().strip() or "My Custom Sounds"
+        self._build_and_install_pack(mc, pack_name, is_export=False)
+
+    def _export_to_zip(self):
+        if not self._replacements:
+            messagebox.showinfo("Список пуст", "Добавьте хотя бы одну замену звука в набор перед экспортом!")
+            return
+
+        pack_name = self.pack_name_var.get().strip() or "My Custom Sounds"
+        target_zip = filedialog.asksaveasfilename(
+            title="Сохранить звуковой ресурс-пак",
+            initialfile=f"{pack_name}.zip",
+            filetypes=[("ZIP архивы", "*.zip"), ("Все файлы", "*.*")]
+        )
+        if not target_zip:
+            return
+
+        self._build_and_install_pack(Path(target_zip).parent, pack_name, is_export=True, explicit_zip=Path(target_zip))
+
+    def _build_and_install_pack(self, dest_root, pack_name, is_export=False, explicit_zip=None):
+        if self._is_working:
+            return
+        self._is_working = True
+        self.btn_install_mc.config(state="disabled")
+        self.btn_export_zip.config(state="disabled")
+        self.set_status("Создание звукового ресурс-пака...")
+
+        def worker():
+            try:
+                with tempfile.TemporaryDirectory() as tmp_dir:
+                    tmp_pack = Path(tmp_dir) / pack_name
+                    tmp_pack.mkdir(parents=True, exist_ok=True)
+
+                    # 1. pack.mcmeta
+                    meta = {
+                        "pack": {
+                            "pack_format": 34,
+                            "supported_formats": [1, 99],
+                            "description": f"Custom Sound Pack - {pack_name}"
+                        }
+                    }
+                    with open(tmp_pack / "pack.mcmeta", "w", encoding="utf-8") as f:
+                        json.dump(meta, f, indent=2)
+
+                    # 2. pack.png icon
+                    make_sound_pack_png(tmp_pack / "pack.png")
+
+                    # 3. Convert and place audio files
+                    total_files = sum(len(r["target_paths"]) for r in self._replacements)
+                    current_file = 0
+
+                    for r in self._replacements:
+                        src_audio = r["user_file"]
+                        for target_rel in r["target_paths"]:
+                            current_file += 1
+                            pct = int((current_file / max(1, total_files)) * 100)
+                            self.after(0, lambda p=pct, n=r['name']: self.set_status(f"Конвертация аудио ({p}%): {n}..."))
+
+                            dest_ogg = tmp_pack / target_rel
+                            convert_audio_to_ogg(src_audio, dest_ogg)
+
+                    # 4. Install or export
+                    if is_export:
+                        out_zip = explicit_zip or (dest_root / f"{pack_name}.zip")
+                        zip_pack(tmp_pack, out_zip)
+                        self.after(0, lambda: self._on_export_success(out_zip))
+                    else:
+                        install_pack(tmp_pack, dest_root)
+                        self.after(0, lambda: self._on_install_success(pack_name, dest_root))
+
+            except Exception as e:
+                self.after(0, lambda err=str(e): self._on_build_error(err))
+            finally:
+                self._is_working = False
+                self.after(0, lambda: (
+                    self.btn_install_mc.config(state="normal"),
+                    self.btn_export_zip.config(state="normal")
+                ))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_install_success(self, pack_name, mc):
+        self.set_status(f"Успешно установлен звуковой пак: {pack_name}")
+        messagebox.showinfo(
+            "Готово! Звуковой пак установлен",
+            f"Звуковой ресурс-пак «{pack_name}» успешно создан и установлен в папку:\n"
+            f"{mc / 'resourcepacks'}\n\n"
+            f"Как включить в игре:\n"
+            f"1. Откройте Minecraft ➔ Настройки ➔ Наборы ресурсов (Resource Packs)\n"
+            f"2. Переместите «{pack_name}» стрелочкой в правую колонку ➔ Нажмите «Готово»!\n\n"
+            f"💡 Если Minecraft уже запущен, нажмите F3 + T для мгновенной перезагрузки звуков!"
+        )
+
+    def _on_export_success(self, zip_path):
+        self.set_status(f"Экспортирован архив: {zip_path.name}")
+        messagebox.showinfo(
+            "Экспорт завершён!",
+            f"Звуковой ресурс-пак успешно экспортирован в архив:\n{zip_path}\n\n"
+            f"Вы можете передать этот .zip друзьям или загрузить на GitHub!"
+        )
+
+    def _on_build_error(self, err_msg):
+        self.set_status(f"Ошибка создания пака: {err_msg}", err=True)
+        messagebox.showerror("Ошибка создания пака", f"Произошла ошибка при создании ресурс-пака:\n{err_msg}")
+
 # ── Main Application Window ───────────────────────────────────────────────────
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Minecraft Texture & Shader Manager v3.1")
+        self.title("Minecraft Resource & Shader Manager v3.2")
         self.geometry("1260x830")
         self.minsize(1050, 680)
         self.configure(bg=BG)
@@ -2368,7 +3532,7 @@ class App(tk.Tk):
 
         hdr = tk.Frame(self, bg=SURFACE, pady=12)
         hdr.pack(fill="x")
-        tk.Label(hdr, text="🎮 Minecraft Texture & Shader Manager", font=("Segoe UI", 18, "bold"), bg=SURFACE, fg=ACCENT).pack(side="left", padx=16)
+        tk.Label(hdr, text="🎮 Minecraft Resource & Shader Manager", font=("Segoe UI", 18, "bold"), bg=SURFACE, fg=ACCENT).pack(side="left", padx=16)
         tk.Label(hdr, text="Папка .minecraft:", bg=SURFACE, fg=SUBTEXT, font=("Segoe UI", 9)).pack(side="left", padx=(20, 4))
         tk.Entry(hdr, textvariable=self.mc_path_var, width=46, bg=BG, fg=TEXT, insertbackground=TEXT, relief="flat", font=("Segoe UI", 9)).pack(side="left")
         ttk.Button(hdr, text="Обзор", command=self._browse_mc).pack(side="left", padx=6)
@@ -2377,10 +3541,12 @@ class App(tk.Tk):
         nb.pack(fill="both", expand=True)
 
         self.tex_tab    = TextureTab(nb, self.mc_path_var, self._set_status)
+        self.sound_tab  = SoundTab(nb, self.mc_path_var, self._set_status)
         self.github_tab = GitHubTab(nb, self.mc_path_var, self._set_status)
         self.shader_tab = ShaderTab(nb, self.mc_path_var, self._set_status)
 
         nb.add(self.tex_tab,    text="  ✏️ Заменить на свои фото  ")
+        nb.add(self.sound_tab,  text="  🔊 Звуки  ")
         nb.add(self.github_tab, text="  ⭐ Текстур-паки GitHub  ")
         nb.add(self.shader_tab, text="  ☀️ Шейдеры  ")
 
