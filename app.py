@@ -7,7 +7,29 @@ Tab 3 - Download texture packs from GitHub with screenshot preview
 Tab 4 - Download & install shaders (Shaderpacks) with version warning & Iris/OptiFine guide
 """
 
-import sys, subprocess, importlib
+import sys, os, subprocess, importlib
+
+# Safe stdout/stderr for PyInstaller --windowed mode (avoids crash when print is called)
+if sys.stdout is None:
+    class _NullStream:
+        def write(self, *args, **kwargs): pass
+        def flush(self, *args, **kwargs): pass
+    sys.stdout = _NullStream()
+if sys.stderr is None:
+    sys.stderr = _NullStream()
+
+# Fix DLL directory resolution for PyInstaller frozen onefile mode
+if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+    _mei = sys._MEIPASS
+    for _sub in ["", "_soundfile_data", "pygame", "numpy.libs"]:
+        _p = os.path.join(_mei, _sub)
+        if os.path.isdir(_p):
+            if hasattr(os, "add_dll_directory"):
+                try:
+                    os.add_dll_directory(_p)
+                except Exception:
+                    pass
+            os.environ["PATH"] = _p + os.pathsep + os.environ.get("PATH", "")
 
 # Auto-install dependencies if running from Python directly
 for _mod, _pkg in [
@@ -24,9 +46,9 @@ for _mod, _pkg in [
             try:
                 subprocess.check_call([sys.executable, "-m", "pip", "install", "--quiet", _pkg])
             except Exception as _err:
-                print(f"Failed to auto-install {_pkg}: {_err}")
+                pass
 
-import html, io, json, os, posixpath, re, shutil, tempfile, threading, time, webbrowser, zipfile
+import html, io, json, posixpath, re, shutil, tempfile, threading, time, webbrowser, zipfile
 import urllib.parse
 from pathlib import Path
 import tkinter as tk
