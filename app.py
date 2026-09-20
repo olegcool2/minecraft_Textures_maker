@@ -39,8 +39,6 @@ from PIL import Image, ImageDraw, ImageOps, ImageTk
 # Audio engine imports
 try:
     import pygame
-    if not pygame.mixer.get_init():
-        pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=1024)
 except Exception:
     pygame = None
 
@@ -48,6 +46,11 @@ try:
     import soundfile as sf
 except Exception:
     sf = None
+
+try:
+    import winsound
+except Exception:
+    winsound = None
 
 # ── Colors & Theme ────────────────────────────────────────────────────────────
 BG      = "#1e1e2e"
@@ -2730,14 +2733,22 @@ class SoundPlayer:
         self._channel = None
         self._lock = threading.Lock()
         self._volume = 1.0
+        self._engine = None  # "pygame" or "winsound"
+        self._stop_event = threading.Event()
+        self._temp_wav = None
 
     def _init_mixer(self):
         if pygame:
             try:
                 if not pygame.mixer.get_init():
-                    pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=1024)
-            except Exception:
-                pass
+                    try:
+                        pygame.mixer.init()
+                    except Exception:
+                        pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=2048)
+                return bool(pygame.mixer.get_init())
+            except Exception as e:
+                print(f"pygame mixer init failed: {e}")
+        return False
 
     def set_volume(self, vol):
         self._volume = max(0.0, min(1.0, float(vol)))
@@ -2751,38 +2762,97 @@ class SoundPlayer:
         if not file_path or not Path(file_path).exists():
             raise FileNotFoundError("Файл звука не найден на диске")
         self.stop()
-        self._init_mixer()
-        if not pygame or not pygame.mixer.get_init():
-            raise RuntimeError("Аудиосистема pygame не инициализирована")
 
-        with self._lock:
-            snd = pygame.mixer.Sound(str(file_path))
-            snd.set_volume(self._volume)
-            ch = snd.play()
-            self._current_sound = snd
-            self._channel = ch
+        # Engine 1: Pygame mixer (primary, high-performance)
+        if self._init_mixer() and pygame and pygame.mixer.get_init():
+            try:
+                with self._lock:
+                    snd = pygame.mixer.Sound(str(file_path))
+                    snd.set_volume(self._volume)
+                    ch = snd.play()
+                    self._current_sound = snd
+                    self._channel = ch
+                    self._engine = "pygame"
 
-            if on_finish_callback and ch:
-                def _monitor():
-                    while ch.get_busy():
-                        time.sleep(0.05)
-                    on_finish_callback()
-                threading.Thread(target=_monitor, daemon=True).start()
+                    if on_finish_callback and ch:
+                        def _monitor():
+                            while ch.get_busy():
+                                time.sleep(0.05)
+                            on_finish_callback()
+                        threading.Thread(target=_monitor, daemon=True).start()
 
-            return snd.get_length()
+                    return snd.get_length()
+            except Exception as e:
+                print(f"Pygame playback error, trying Windows native fallback: {e}")
+
+        # Engine 2: Windows native audio (winsound + soundfile)
+        # Decodes .ogg, .mp3, .wav into memory/temp WAV and plays natively without external DLLs!
+        if winsound:
+            try:
+                p = Path(file_path)
+                dur = 1.0
+                target_wav = None
+
+                if p.suffix.lower() == ".wav":
+                    target_wav = str(p)
+                elif sf is not None:
+                    data, sr = sf.read(str(p))
+                    dur = len(data) / float(sr)
+                    tmp_wav_path = os.path.join(tempfile.gettempdir(), f"mc_preview_{os.getpid()}.wav")
+                    sf.write(tmp_wav_path, data, sr, format="WAV")
+                    self._temp_wav = tmp_wav_path
+                    target_wav = tmp_wav_path
+
+                if target_wav and os.path.exists(target_wav):
+                    with self._lock:
+                        winsound.PlaySound(target_wav, winsound.SND_FILENAME | winsound.SND_ASYNC)
+                        self._engine = "winsound"
+                        self._stop_event.clear()
+
+                        if on_finish_callback:
+                            def _timer(evt):
+                                slept = 0.0
+                                while slept < dur and not evt.is_set():
+                                    time.sleep(0.05)
+                                    slept += 0.05
+                                if not evt.is_set():
+                                    with self._lock:
+                                        if self._engine == "winsound":
+                                            self._engine = None
+                                    on_finish_callback()
+                            threading.Thread(target=_timer, args=(self._stop_event,), daemon=True).start()
+
+                        return dur
+            except Exception as e:
+                print(f"winsound fallback error: {e}")
+
+        raise RuntimeError(
+            "Не удалось воспроизвести аудио.\n"
+            "Убедитесь, что к компьютеру подключены наушники или колонки,\n"
+            "и служба звука Windows включена."
+        )
 
     def stop(self):
         with self._lock:
+            self._stop_event.set()
             if pygame and pygame.mixer.get_init():
                 try:
                     pygame.mixer.stop()
                 except Exception:
                     pass
+            if winsound:
+                try:
+                    winsound.PlaySound(None, winsound.SND_PURGE)
+                except Exception:
+                    pass
             self._channel = None
             self._current_sound = None
+            self._engine = None
 
     def is_playing(self):
-        return bool(self._channel and self._channel.get_busy())
+        if self._engine == "pygame" and self._channel:
+            return self._channel.get_busy()
+        return self._engine is not None
 
 # ── Tab 2: Sound Manager ──────────────────────────────────────────────────────
 class SoundTab(tk.Frame):
@@ -3085,9 +3155,10 @@ class SoundTab(tk.Frame):
     def _reload_sounds(self):
         self.count_lbl.config(text="Чтение ресурсов Minecraft...")
         self.set_status("Поиск звуков в .minecraft...")
+        mc_path_val = self.mc_path_var.get()
 
         def worker():
-            mc = Path(self.mc_path_var.get())
+            mc = Path(mc_path_val)
             idx_name, indexed = load_minecraft_sound_index(mc)
             self._indexed_sounds = indexed
 
@@ -3288,6 +3359,9 @@ class SoundTab(tk.Frame):
             if pygame and pygame.mixer.get_init():
                 s = pygame.mixer.Sound(str(p))
                 dur = s.get_length()
+            elif sf is not None:
+                info = sf.info(str(p))
+                dur = info.duration
         except Exception:
             pass
         self._user_file_duration = dur
